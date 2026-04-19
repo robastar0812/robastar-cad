@@ -18,6 +18,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 const S={
   mode:'single',      // 'single' | 'diff'
+  selectedChain: new Set(), // ハイライト対象のチェーン線集合
   f1:null,f2:null,
   diff:null,
   pixelDiff:null,
@@ -34,6 +35,36 @@ const S={
   allItems:[],selectedEnt:null,
   hoveredEnt:null,
 };
+
+// ── 引き込み線チェーン構築 ──
+// クリックされた LINE から端点で繋がる全 LINE を辿り Set で返す
+function buildChain(e) {
+  const result = new Set();
+  if(!e || e.type !== 'LINE') return result;
+  const allEnts = S.f1 && S.f1.parsed ? S.f1.parsed.entities : [];
+  const layerLines = allEnts.filter(l => l.type === 'LINE' && l.layer === e.layer);
+  const bW = S.bounds ? S.bounds.maxX - S.bounds.minX : 10000;
+  const TOL = Math.max(bW * 0.0005, 0.5);
+  result.add(e);
+  let frontier = [e];
+  for(let hop = 0; hop < 6; hop++) {
+    const next = [];
+    for(const cur of frontier) {
+      for(const l of layerLines) {
+        if(result.has(l)) continue;
+        if(
+          Math.hypot(cur.x1-l.x1, cur.y1-l.y1) <= TOL ||
+          Math.hypot(cur.x1-l.x2, cur.y1-l.y2) <= TOL ||
+          Math.hypot(cur.x2-l.x1, cur.y2-l.y1) <= TOL ||
+          Math.hypot(cur.x2-l.x2, cur.y2-l.y2) <= TOL
+        ) { result.add(l); next.push(l); }
+      }
+    }
+    if(!next.length || result.size > 30) break;
+    frontier = next;
+  }
+  return result;
+}
 
 // Layer palette
 const LAYER_COLORS=['#00b4ff','#00ffd0','#ffc040','#ff6080','#a0e0ff','#80ffb0','#ffb080','#e080ff','#40d0a0','#d0a040'];
@@ -391,7 +422,7 @@ function computeBounds(lists){
     const s=[...arr].sort((a,b)=>a-b);
     const q1=s[Math.floor(s.length*0.25)];
     const q3=s[Math.floor(s.length*0.75)];
-    const iqr=(q3-q1)*3.0; // 緩めの閾値
+    const iqr=(q3-q1)*1.5; // 標準的な外れ値フィルター係数
     return arr.filter(v=>v>=q1-iqr&&v<=q3+iqr);
   }
   const fx=iqrFilter(allX), fy=iqrFilter(allY);
@@ -422,7 +453,7 @@ const DIFF_CLR={same:'rgba(58,100,140,0.65)',add:'#00e87a',del:'#ff3d5a'};
 
 // ═══ SEMANTIC COLOR ENGINE ═══
 const SEM = {
-  outline:   { color:'#e8e8e8', label:'外形線',     tag:'OUTLINE', priority:0, vis:true },
+  outline:   { color:'#8899bb', label:'外形線',     tag:'OUTLINE', priority:0, vis:true },
   hidden:    { color:'#4488ff', label:'隠れ線',     tag:'HIDDEN',  priority:1, vis:true },
   center:    { color:'#ff4444', label:'中心線',     tag:'CENTER',  priority:2, vis:true },
   dimension: { color:'#44dd66', label:'寸法線',     tag:'DIM',     priority:3, vis:true },
@@ -753,15 +784,21 @@ function redrawDXF(){
     if(visLayers.del)diff.removed.forEach(e=>{if(!isVisible(e))return;if(S.layers[e.layer]&&!S.layers[e.layer].visible)return;drawEnt(ctx,e,DIFF_CLR.del,b,sc,pan,ch,e===S.selectedEnt);});
     if(visLayers.add)diff.added.forEach(e=>{if(!isVisible(e))return;if(S.layers[e.layer]&&!S.layers[e.layer].visible)return;drawEnt(ctx,e,DIFF_CLR.add,b,sc,pan,ch,e===S.selectedEnt);});
   } else if(S.f1&&S.f1.type==='dxf'){
-    const ents=S.f1.parsed.entities;
+    const parsed=S.f1.parsed;
+    const ents=parsed.entities;
     const useSem = S.colorMode==='semantic';
-    // Draw in priority order when semantic (holes on top)
-    const byLayer={};
-    ents.forEach(e=>{if(!byLayer[e.layer])byLayer[e.layer]=[];byLayer[e.layer].push(e);});
+    // byLayer / semantic-sort は entities 不変のあいだ再利用できるのでキャッシュ
+    if(!parsed._byLayer){
+      const byLayer={};
+      for(const e of ents){(byLayer[e.layer]||(byLayer[e.layer]=[])).push(e);}
+      parsed._byLayer=byLayer;
+    }
+    const byLayer=parsed._byLayer;
 
-    const drawList = useSem
-      ? [...ents].sort((a,b)=>(SEM[a._sem||'other']?.priority||9)-(SEM[b._sem||'other']?.priority||9))
-      : ents;
+    if(useSem && !parsed._drawListSem){
+      parsed._drawListSem=[...ents].sort((a,b)=>(SEM[a._sem||'other']?.priority||9)-(SEM[b._sem||'other']?.priority||9));
+    }
+    const drawList = useSem ? parsed._drawListSem : ents;
 
     if(useSem){
       drawList.forEach(e=>{
@@ -772,7 +809,7 @@ function redrawDXF(){
         if(!SEM[sem]||!SEM[sem].vis)return;
         const off=getLayerOffset(e.layer,b,S.explode);
         const adjPan={x:pan.x+off.dx*sc,y:pan.y-off.dy*sc};
-        drawEnt(ctx,e,semColor(e),b,sc,adjPan,ch,e===S.selectedEnt);
+        drawEnt(ctx,e,semColor(e),b,sc,adjPan,ch,e===S.selectedEnt||S.selectedChain.has(e));
       });
     } else {
       Object.entries(byLayer).forEach(([layerName,layerEnts])=>{
@@ -781,7 +818,7 @@ function redrawDXF(){
         const color=layerInfo?layerInfo.color:'#00b4ff';
         const off=getLayerOffset(layerName,b,S.explode);
         const adjPan={x:pan.x+off.dx*sc,y:pan.y-off.dy*sc};
-        layerEnts.forEach(e=>{if(!isVisible(e))return;drawEnt(ctx,e,color,b,sc,adjPan,ch,e===S.selectedEnt);});
+        layerEnts.forEach(e=>{if(!isVisible(e))return;drawEnt(ctx,e,color,b,sc,adjPan,ch,e===S.selectedEnt||S.selectedChain.has(e));});
       });
     }
     // Layer / semantic labels when exploding
@@ -1206,7 +1243,7 @@ function clearFile(n,event){
     document.getElementById('file2').disabled=true;
     document.getElementById('hint2').innerHTML='FILE 1 を先に読み込んでください<small>DXF / PDF / IGES / STL / OBJ / PLY / OFF / STEP / 画像</small>';
   }
-  S.diff=null;S.pixelDiff=null;S.singleCanvas=null;S.bounds=null;S.selectedEnt=null;
+  S.diff=null;S.pixelDiff=null;S.singleCanvas=null;S.bounds=null;S.selectedEnt=null;S.selectedChain=new Set();
   S.layers={};S.allItems=[];
   // キャンバスをクリアしてビジュアルタブに戻す
   resetCanvas();resetStats();
@@ -1296,8 +1333,8 @@ async function runSingle(){
     updateStats(f.parsed.entities.length,t('entCount'),f.parsed.layers.length,t('layerCount'),null,null);
     renderEntList(items);
     buildLayerPanel();
-    // キャンバスサイズ確定後にフィット
-    setTimeout(()=>{ fitView(); redrawDXF(); }, 100);
+    // キャンバスサイズ確定後にフィット（2 回の rAF でレイアウト確定を待つ ≒ 32ms）
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{ fitView(); redrawDXF(); }));
   }else if(f.type==='pdf'){
     showLoading(true,'ページ描画中...');
     S.singleCanvas=await renderPDFPage(f.pdfDoc,S.page+1,1.5);
@@ -1486,6 +1523,7 @@ function selectEnt(listIdx){
   const item=filtered[listIdx];
   if(!item)return;
   S.selectedEnt=item.e;
+  S.selectedChain=buildChain(item.e);
   showInspector(item.e,item.t);
   filterEntList();
   if(S.f1&&S.f1.type==='dxf')redrawDXF();
@@ -1645,10 +1683,6 @@ function showInspector(e,t){
   if(t&&t!=='single')h+=`<div class="insp-kv"><span class="insp-k">差分</span><span class="insp-v" style="color:${t==='add'?'var(--add)':t==='del'?'var(--del)':'var(--dim)'}">${t==='add'?'追加':t==='del'?'削除':'共通'}</span></div>`;
   switch(e.type){
     case'LINE':
-      h+=`<div class="insp-kv"><span class="insp-k">始点 X</span><span class="insp-v hi">${f(e.x1)}</span></div>`;
-      h+=`<div class="insp-kv"><span class="insp-k">始点 Y</span><span class="insp-v hi">${f(e.y1)}</span></div>`;
-      h+=`<div class="insp-kv"><span class="insp-k">終点 X</span><span class="insp-v hi">${f(e.x2)}</span></div>`;
-      h+=`<div class="insp-kv"><span class="insp-k">終点 Y</span><span class="insp-v hi">${f(e.y2)}</span></div>`;
       h+=`<div class="insp-kv"><span class="insp-k">長さ</span><span class="insp-v" style="color:var(--accent2)">${f(Math.hypot(e.x2-e.x1,e.y2-e.y1))}</span></div>`;
       h+=`<div class="insp-kv"><span class="insp-k">角度</span><span class="insp-v">${f(Math.atan2(e.y2-e.y1,e.x2-e.x1)*180/Math.PI)}°</span></div>`;
       break;
@@ -1786,7 +1820,7 @@ window.addEventListener('mousemove',e=>{
   if(S.dragging){
     S.pan.x+=e.clientX-S.lastMouse.x;S.pan.y-=(e.clientY-S.lastMouse.y);
     S.lastMouse={x:e.clientX,y:e.clientY};
-    if(S.f1&&S.f1.type==='dxf')redrawDXF();else redrawPDF();
+    if(S.f1&&S.f1.type==='dxf')redrawDXFRaf();else redrawPDF();
   }
   // Tooltip on hover (キャンバス内のみ)
   if(!S.dragging&&S.f1&&S.f1.type==='dxf'){
@@ -1820,6 +1854,7 @@ window.addEventListener('mouseup',e=>{
       const hit=hitTest(mx,my);
       if(hit){
         S.selectedEnt=hit;
+        S.selectedChain=buildChain(hit);
         // Find in list
         const all=S.mode==='single'?S.allItems:S.allItems.filter(i=>{const ef=S.efState||{add:true,del:true,same:true};return i.t==='add'?ef.add:i.t==='del'?ef.del:ef.same;});
         const idx=all.findIndex(i=>i.e===hit);
@@ -1839,7 +1874,7 @@ cw.addEventListener('wheel',e=>{
   const mx=e.clientX-rect.left,my=e.clientY-rect.top;
   S.pan.x=mx+(S.pan.x-mx)*f;S.pan.y=my+(S.pan.y-my)*f;
   S.scale*=f;
-  if(S.f1&&S.f1.type==='dxf')redrawDXF();else redrawPDF();
+  if(S.f1&&S.f1.type==='dxf')redrawDXFRaf();else redrawPDF();
 },{passive:false});
 cw.addEventListener('mouseleave',()=>document.getElementById('tooltip').style.display='none');
 
@@ -2753,7 +2788,9 @@ function updateCamera3D() {
 
 function resize3D() {
   const wrap = document.getElementById('view3d');
-  const w = wrap.clientWidth, h = wrap.clientHeight || 600;
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  // display:none のとき clientWidth/Height = 0 → スキップ（switchTab の setTimeout が正しく呼び直す）
+  if (!w || !h) return;
   T3.renderer.setSize(w, h);
   T3.camera.aspect = w / h;
   T3.camera.updateProjectionMatrix();
