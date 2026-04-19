@@ -1147,7 +1147,9 @@ function redrawDXF(){
         drawEnt(ctx,e,semColor(e),b,sc,adjPan,ch,e===S.selectedEnt||S.selectedChain.has(e));
       });
     } else {
-      // perf: 同色 LINE は単一 beginPath/stroke にバッチ化 (178k 件で 5-10 倍速)
+      // perf: LINE を 「実効色 (entity._aciColor || layerColor)」 でグルーピングし
+      //   色グループ毎に単一 beginPath/stroke でバッチ描画。
+      //   178k state-change → 数十回に圧縮。元の per-entity ACI 色は維持。
       Object.entries(byLayer).forEach(([layerName,layerEnts])=>{
         const layerInfo=S.layers[layerName];
         if(layerInfo&&!layerInfo.visible)return;
@@ -1155,25 +1157,33 @@ function redrawDXF(){
         const off=getLayerOffset(layerName,b,S.explode);
         const adjPan={x:pan.x+off.dx*sc,y:pan.y-off.dy*sc};
 
-        // ── LINE バッチ ──
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
-        ctx.setLineDash([]);
-        ctx.shadowBlur = 0;
-        ctx.beginPath();
-        let lineBatched = 0;
+        // ── LINE を実効色でグルーピング ──
+        const colorGroups = new Map(); // color → [LINE entities]
         for(const e of layerEnts){
           if(e.type !== 'LINE') continue;
           if(!isVisible(e)) continue;
-          if(e === S.selectedEnt || S.selectedChain.has(e)) continue; // ハイライトは個別描画
+          if(e === S.selectedEnt || S.selectedChain.has(e)) continue; // ハイライトは個別
           const lenPx = Math.hypot(e.x2-e.x1, e.y2-e.y1) * sc;
           if(lenPx < 0.5) continue; // perf: LOD skip
-          const [x1,y1] = W(e.x1,e.y1,b,sc,adjPan,ch);
-          const [x2,y2] = W(e.x2,e.y2,b,sc,adjPan,ch);
-          ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
-          lineBatched++;
+          const ec = e._aciColor || color;
+          let g = colorGroups.get(ec);
+          if(!g){ g = []; colorGroups.set(ec, g); }
+          g.push(e);
         }
-        if(lineBatched > 0) ctx.stroke();
+        // ── グループ毎に一括 stroke ──
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        ctx.shadowBlur = 0;
+        for(const [ec, lines] of colorGroups){
+          ctx.strokeStyle = ec;
+          ctx.beginPath();
+          for(const e of lines){
+            const [x1,y1] = W(e.x1,e.y1,b,sc,adjPan,ch);
+            const [x2,y2] = W(e.x2,e.y2,b,sc,adjPan,ch);
+            ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+          }
+          ctx.stroke();
+        }
 
         // ── 残り (CIRCLE/ARC/LWPOLYLINE/TEXT/POINT) と ハイライト LINE は個別描画 ──
         for(const e of layerEnts){
@@ -1301,8 +1311,10 @@ function hitTest(mx,my){
   const ch=wrap.clientHeight;
   // perf: マウス位置の world 座標を計算 → エンティティ bbox とのざっくり交差で
   // 高速にカリングしてから distToEnt を回す。178k 件で 200ms+ → 数 ms に短縮
+  // fix: メインキャンバス W() の Y 反転 = ch - ((wy-b.minY)*sc + pan.y)
+  //   → wy = b.minY + (ch - my - pan.y) / sc  (b.maxY ではない)
   const wxAtMouse = (mx - pan.x) / sc + b.minX;
-  const wyAtMouse = b.maxY - (ch - my - pan.y) / sc; // メインキャンバスの Y 反転と一致
+  const wyAtMouse = b.minY + (ch - my - pan.y) / sc;
   const hitR = Math.max(8, 10/sc);
   const wHitR = hitR / sc; // world 単位でのヒット半径
   const entities=S.mode==='diff'&&S.diff
