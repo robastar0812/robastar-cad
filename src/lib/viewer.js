@@ -45,22 +45,25 @@ function buildChain(e) {
   const layerLines = allEnts.filter(l => l.type === 'LINE' && l.layer === e.layer);
   const bW = S.bounds ? S.bounds.maxX - S.bounds.minX : 10000;
   const TOL = Math.max(bW * 0.0005, 0.5);
+  const baseLen = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
   result.add(e);
   let frontier = [e];
-  for(let hop = 0; hop < 6; hop++) {
+  for(let hop = 0; hop < 3; hop++) {
     const next = [];
     for(const cur of frontier) {
       for(const l of layerLines) {
         if(result.has(l)) continue;
+        const len = Math.hypot(l.x2 - l.x1, l.y2 - l.y1);
+        if(len > baseLen * 5) continue;
         if(
-          Math.hypot(cur.x1-l.x1, cur.y1-l.y1) <= TOL ||
-          Math.hypot(cur.x1-l.x2, cur.y1-l.y2) <= TOL ||
-          Math.hypot(cur.x2-l.x1, cur.y2-l.y1) <= TOL ||
-          Math.hypot(cur.x2-l.x2, cur.y2-l.y2) <= TOL
+          Math.hypot(cur.x1 - l.x1, cur.y1 - l.y1) <= TOL ||
+          Math.hypot(cur.x1 - l.x2, cur.y1 - l.y2) <= TOL ||
+          Math.hypot(cur.x2 - l.x1, cur.y2 - l.y1) <= TOL ||
+          Math.hypot(cur.x2 - l.x2, cur.y2 - l.y2) <= TOL
         ) { result.add(l); next.push(l); }
       }
     }
-    if(!next.length || result.size > 30) break;
+    if(!next.length || result.size > 8) break;
     frontier = next;
   }
   return result;
@@ -2980,7 +2983,7 @@ function buildMesh(parsed) {
   T3.scene.add(T3.semMesh);
 
   // ワイヤーフレーム
-  const wireMat = new THREE.MeshBasicMaterial({color:0x00b4ff, wireframe:true, opacity:0.25, transparent:true});
+  const wireMat = new THREE.MeshBasicMaterial({color:0x00b4ff, wireframe:true, opacity:0.6, transparent:true});
   T3.wireframe = new THREE.Mesh(geo, wireMat);
   T3.wireframe.visible = false;
   T3.scene.add(T3.wireframe);
