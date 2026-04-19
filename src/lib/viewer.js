@@ -803,6 +803,45 @@ function getLayerOffset(layerName,b,explodeFactor){
   return{dx:Math.cos(angle)*radius,dy:Math.sin(angle)*radius};
 }
 
+// ── 選択チェーンの末端点に赤丸マーカーを描画 ──
+function drawChainTip(ctx, b, sc, pan, ch) {
+  if(!S.selectedChain || S.selectedChain.size === 0) return;
+  // チェーン全端点を収集
+  const pts = new Map();
+  for(const e of S.selectedChain) {
+    for(const [px, py] of [[e.x1,e.y1],[e.x2,e.y2]]) {
+      const key = `${Math.round(px*10)},${Math.round(py*10)}`;
+      pts.set(key, (pts.get(key)||0) + 1);
+    }
+  }
+  // 1本の線にしか属さない端点 = 末端点
+  const tips = [];
+  for(const [key, count] of pts.entries()) {
+    if(count === 1) {
+      const [x, y] = key.split(',').map(v => parseInt(v)/10);
+      tips.push([x, y]);
+    }
+  }
+  if(!tips.length) return;
+  ctx.save();
+  ctx.shadowBlur = 0;
+  ctx.setLineDash([]);
+  for(const [wx, wy] of tips) {
+    const [cx, cy] = W(wx, wy, b, sc, pan, ch);
+    // 外輪郭（暗め）
+    ctx.beginPath();
+    ctx.arc(cx, cy, 6, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(255,61,90,0.3)';
+    ctx.fill();
+    // 中心点（赤）
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI*2);
+    ctx.fillStyle = '#ff3d5a';
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 let _rafPending = false;
 function redrawDXFRaf(){
   if(_rafPending) return;
@@ -924,6 +963,8 @@ function redrawDXF(){
       });
     }
   }
+  // 選択チェーンの末端に赤丸マーカーを描画
+  drawChainTip(ctx, b, sc, pan, ch);
 }
 
 // ═══ PDF RENDER ═══
