@@ -2054,18 +2054,27 @@ async function runMain(){
 
 async function runSingle(){
   const f=S.f1;
+  // perf: 重い処理の合間に rAF を await することで
+  // ローディングオーバーレイのテキスト更新がブラウザに反映される
+  const yieldFrame = () => new Promise(r => requestAnimationFrame(r));
   if(f.type==='dxf'){
+    showLoading(true, `解析中... (${f.parsed.entities.length.toLocaleString()} エンティティ)`);
+    await yieldFrame();
     S.bounds=computeBounds([f.parsed.entities]);
     S.diff=null;S.pixelDiff=null;S.singleCanvas=null;
     // エンティティ境界ボックスをキャッシュ（ビューポートカリング用）
     // 一度計算すれば redrawDXF の度に再計算する必要がない
     if(!f._boundsCached){
+      showLoading(true, '境界キャッシュ生成中...');
+      await yieldFrame();
       for(const e of f.parsed.entities){ if(!e._b) e._b = entBounds(e); }
       f._boundsCached=true;
     }
     // Semantic analysis
     // analyzeSemantics はエンティティ変化時のみ実行（重い処理）
     if(!f._semCounts){
+      showLoading(true, '意味分類中...');
+      await yieldFrame();
       // パフォーマンス: 最大20,000件でサンプリング分析
       const MAX_SEM=20000;
       const semEnts=f.parsed.entities.length>MAX_SEM
@@ -2077,14 +2086,21 @@ async function runSingle(){
         f.parsed.entities.forEach(e=>{if(!e._sem) e._sem='other';});
       }
     }
+    showLoading(true, '一覧構築中...');
+    await yieldFrame();
     buildSemLegend(f._semCounts);
     const items=f.parsed.entities.map(e=>({e,t:'single'}));
     S.allItems=items;
     updateStats(f.parsed.entities.length,t('entCount'),f.parsed.layers.length,t('layerCount'),null,null);
     renderEntList(items);
     buildLayerPanel();
+    showLoading(true, '描画中...');
+    await yieldFrame();
     // キャンバスサイズ確定後にフィット（2 回の rAF でレイアウト確定を待つ ≒ 32ms）
-    requestAnimationFrame(()=>requestAnimationFrame(()=>{ fitView(); redrawDXF(); renderPartGroups(); }));
+    await new Promise(r => requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      fitView(); redrawDXF(); renderPartGroups();
+      r();
+    })));
   }else if(f.type==='pdf'){
     showLoading(true,'ページ描画中...');
     S.singleCanvas=await renderPDFPage(f.pdfDoc,S.page+1,1.5);
@@ -2590,7 +2606,12 @@ function setMode(mode){
   }
   // Re-run if files loaded
   S.page=0;
-  if(S.f1)runMain();
+  if(S.f1){
+    // perf: 重い runMain を即時実行するとローディング表示がペイント前にブロックされる。
+    // 先にオーバーレイを出してから 2 フレーム待ち → 必ず描画されてから処理開始
+    showLoading(true, '描画準備中...');
+    requestAnimationFrame(()=>requestAnimationFrame(()=>runMain()));
+  }
   else{resetCanvas();resetStats();document.getElementById('emptyMsg').style.display='';}
 }
 
