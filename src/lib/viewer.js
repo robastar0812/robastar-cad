@@ -18,7 +18,9 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 const S={
   mode:'single',      // 'single' | 'diff'
-  selectedChain: new Set(), // ハイライト対象のチェーン線集合
+  selectedChain: new Set(),
+  searchResults: [],  // テキスト検索ヒット一覧
+  searchIdx: -1,      // 現在フォーカス中のインデックス
   f1:null,f2:null,
   diff:null,
   pixelDiff:null,
@@ -35,6 +37,74 @@ const S={
   allItems:[],selectedEnt:null,
   hoveredEnt:null,
 };
+
+// ── テキスト検索 ──
+function searchDXF(query) {
+  S.searchResults = [];
+  S.searchIdx = -1;
+  if(!query || !S.f1 || S.f1.type !== 'dxf') { renderSearchResults(); return; }
+  const q = query.trim().toLowerCase();
+  if(!q) { renderSearchResults(); return; }
+  const allEnts = S.f1.parsed.entities;
+  // テキストエンティティから検索
+  const textHits = allEnts.filter(e =>
+    (e.type==='TEXT'||e.type==='MTEXT') && e.text && e.text.toLowerCase().includes(q)
+  );
+  // レイヤー名から検索
+  const layerHits = allEnts.filter(e =>
+    e.layer && e.layer.toLowerCase().includes(q) && e.type==='LINE'
+  );
+  // テキストヒット優先、重複除去
+  const seen = new Set();
+  const results = [];
+  for(const e of [...textHits, ...layerHits]) {
+    const key = e.type==='TEXT'||e.type==='MTEXT'
+      ? `${e.x},${e.y},${e.text}`
+      : `${e.x1},${e.y1},${e.layer}`;
+    if(!seen.has(key)) { seen.add(key); results.push(e); }
+    if(results.length >= 200) break;
+  }
+  S.searchResults = results;
+  renderSearchResults();
+  if(results.length > 0) jumpToSearchResult(0);
+}
+
+function jumpToSearchResult(idx) {
+  if(!S.searchResults.length) return;
+  idx = Math.max(0, Math.min(S.searchResults.length - 1, idx));
+  S.searchIdx = idx;
+  const e = S.searchResults[idx];
+  // ジャンプ: エンティティの座標を画面中央に
+  const wrap = document.getElementById('canvasWrap');
+  const cw = wrap.clientWidth, ch = wrap.clientHeight;
+  const b = S.bounds;
+  if(!b) return;
+  const ex = e.x ?? e.x1 ?? e.cx ?? 0;
+  const ey = e.y ?? e.y1 ?? e.cy ?? 0;
+  S.pan.x = cw/2 - (ex - b.minX) * S.scale;
+  S.pan.y = ch/2 - (b.maxY - ey) * S.scale;
+  S.selectedEnt = e;
+  S.selectedChain = new Set();
+  renderSearchResults();
+  redrawDXF();
+}
+
+function renderSearchResults() {
+  const box = document.getElementById('searchResultBox');
+  if(!box) return;
+  const results = S.searchResults;
+  if(!results.length) {
+    box.style.display = 'none';
+    return;
+  }
+  box.style.display = 'block';
+  const countEl = document.getElementById('searchCount');
+  if(countEl) countEl.textContent = `${S.searchIdx + 1} / ${results.length} 件`;
+  const prevBtn = document.getElementById('searchPrev');
+  const nextBtn = document.getElementById('searchNext');
+  if(prevBtn) prevBtn.disabled = S.searchIdx <= 0;
+  if(nextBtn) nextBtn.disabled = S.searchIdx >= results.length - 1;
+}
 
 // ── 引き込み線チェーン構築 ──
 // クリックされた LINE から端点で繋がる全 LINE を辿り Set で返す
@@ -1250,6 +1320,17 @@ function updateZoneUI(n,name,meta,typeKey){
   if(cb) cb.style.display='';
 }
 
+function clearSelection(){
+  S.selectedEnt = null;
+  S.selectedChain = new Set();
+  const ib = document.getElementById('inspBody');
+  if(ib){ ib.style.display='none'; ib.innerHTML=''; }
+  const ie = document.getElementById('inspEmpty');
+  if(ie) ie.style.display='';
+  filterEntList();
+  redrawDXF();
+}
+
 function clearFile(n,event){
   event.stopPropagation();
   S[`f${n}`]=null;
@@ -1856,6 +1937,7 @@ window.addEventListener('mouseup',e=>{
       const rect=cw.getBoundingClientRect();
       const mx=e.clientX-rect.left,my=e.clientY-rect.top;
       const hit=hitTest(mx,my);
+      if(!hit){ clearSelection(); }
       if(hit){
         S.selectedEnt=hit;
         S.selectedChain=buildChain(hit);
@@ -2615,6 +2697,55 @@ async function parseDWG(buffer) {
   document.getElementById('entFilter').style.display='none';
   document.getElementById('stInfo2').style.display='none';
   document.getElementById('tabLayers').style.display='';
+
+  // 検索UIを st-list の先頭に注入
+  const stList = document.getElementById('st-list');
+  if(stList) {
+    const searchUI = document.createElement('div');
+    searchUI.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--border2);flex-shrink:0;';
+    searchUI.innerHTML = `
+      <div style="display:flex;gap:4px;align-items:center;">
+        <input id="searchInput" type="text" placeholder="部品番号・テキスト検索..."
+          style="flex:1;background:rgba(0,180,255,.08);border:1px solid rgba(0,180,255,.25);
+          color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 8px;
+          border-radius:4px;outline:none;"
+        />
+        <button id="searchClear" style="font-size:10px;padding:2px 6px;
+          background:rgba(255,61,90,.15);border:1px solid rgba(255,61,90,.3);
+          color:#ff3d5a;border-radius:4px;cursor:pointer;">✕</button>
+      </div>
+      <div id="searchResultBox" style="display:none;margin-top:4px;
+        display:flex;align-items:center;gap:4px;font-family:var(--mono);font-size:10px;color:var(--dim);">
+        <button id="searchPrev" style="padding:1px 6px;background:rgba(0,180,255,.1);
+          border:1px solid rgba(0,180,255,.3);color:var(--accent);border-radius:3px;cursor:pointer;">◀</button>
+        <span id="searchCount">0 / 0 件</span>
+        <button id="searchNext" style="padding:1px 6px;background:rgba(0,180,255,.1);
+          border:1px solid rgba(0,180,255,.3);color:var(--accent);border-radius:3px;cursor:pointer;">▶</button>
+      </div>
+    `;
+    stList.insertBefore(searchUI, stList.firstChild);
+    // イベント登録
+    document.getElementById('searchInput').addEventListener('input', e => {
+      searchDXF(e.target.value);
+    });
+    document.getElementById('searchInput').addEventListener('keydown', e => {
+      if(e.key==='Enter') jumpToSearchResult(S.searchIdx + 1);
+      if(e.key==='Escape') {
+        e.target.value='';
+        searchDXF('');
+      }
+    });
+    document.getElementById('searchClear').addEventListener('click', () => {
+      document.getElementById('searchInput').value='';
+      searchDXF('');
+    });
+    document.getElementById('searchPrev')?.addEventListener('click', () => {
+      jumpToSearchResult(S.searchIdx - 1);
+    });
+    document.getElementById('searchNext')?.addEventListener('click', () => {
+      jumpToSearchResult(S.searchIdx + 1);
+    });
+  }
 
   setupZone(1);setupZone(2);
   setupBodyDrop();
@@ -3921,7 +4052,12 @@ function switchHelpTab(idx){
   document.querySelectorAll('.help-section').forEach((s,i)=>s.classList.toggle('active',i===idx));
 }
 // ESCキーで閉じる
-document.addEventListener('keydown',e=>{if(e.key==='Escape')hideHelp();});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    hideHelp();
+    clearSelection();
+  }
+});
 // モーダル背景クリックで閉じる
 document.getElementById('helpModal')?.addEventListener('click',e=>{
   if(e.target.id==='helpModal') hideHelp();
