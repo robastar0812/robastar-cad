@@ -66,8 +66,13 @@ export default defineConfig({
       }
     })
   ],
+  // NOTE: pdfjs-dist 3.11.174 ships as a UMD/webpack bundle. Vite's dep
+  // optimizer (esbuild) needs to pre-bundle it so `GlobalWorkerOptions`
+  // and `getDocument` are exposed as proper named exports. Excluding it
+  // (as the initial spec suggested) leaves the UMD wrapping intact and
+  // `pdfjsLib.GlobalWorkerOptions` ends up undefined at runtime.
   optimizeDeps: {
-    exclude: ['pdfjs-dist']
+    include: ['pdfjs-dist']
   },
   build: {
     outDir: 'dist',

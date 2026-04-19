@@ -1021,6 +1021,7 @@ function setExplode(val){
 function setupZone(n){
   const zone=document.getElementById(`zone${n}`);
   const inp=document.getElementById(`file${n}`);
+  if(!zone||!inp){console.error(`[viewer] setupZone(${n}): zone or input not found`);return;}
   zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('drag-over');});
   zone.addEventListener('dragleave',()=>zone.classList.remove('drag-over'));
   zone.addEventListener('drop',e=>{
@@ -2475,6 +2476,7 @@ async function parseDWG(buffer) {
 (function init(){
   // Inject layer panel into tab content area (layers tab)
   const wrap=document.getElementById('canvasWrap');
+  if(!wrap){console.error('[viewer] #canvasWrap not found - DOM not mounted before viewer.js imported?');return;}
   const lp=document.createElement('div');
   lp.id='layersPanelView';
   lp.style.cssText='position:absolute;inset:0;display:none;background:var(--bg);overflow:hidden;flex-direction:column;';
