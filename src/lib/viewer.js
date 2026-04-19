@@ -1654,6 +1654,118 @@ function renderRecent() {
   });
 }
 
+// ── 選択寸法合計 ──
+function calcSelectionStats() {
+  const box = document.getElementById('selStatsBox');
+  if(!box) return;
+  const chain = S.selectedChain;
+  if(!chain || chain.size === 0) { box.style.display='none'; return; }
+
+  let totalLen = 0, lineCount = 0;
+  let totalCircleArea = 0, circleCount = 0;
+  let totalArcLen = 0, arcCount = 0;
+  let polyLen = 0, polyCount = 0;
+
+  for(const e of chain) {
+    switch(e.type) {
+      case 'LINE': {
+        const l = Math.hypot(e.x2-e.x1, e.y2-e.y1);
+        totalLen += l; lineCount++; break;
+      }
+      case 'CIRCLE': {
+        totalCircleArea += Math.PI * e.r * e.r;
+        circleCount++; break;
+      }
+      case 'ARC': {
+        let span = e.ea - e.sa;
+        if(span < 0) span += 360;
+        totalArcLen += e.r * span * Math.PI / 180;
+        arcCount++; break;
+      }
+      case 'LWPOLYLINE': {
+        let pl = 0;
+        for(let i=0; i<e.pts.length-1; i++)
+          pl += Math.hypot(e.pts[i+1].x-e.pts[i].x, e.pts[i+1].y-e.pts[i].y);
+        if(e.closed && e.pts.length > 2)
+          pl += Math.hypot(e.pts[0].x-e.pts[e.pts.length-1].x, e.pts[0].y-e.pts[e.pts.length-1].y);
+        polyLen += pl; polyCount++; break;
+      }
+    }
+  }
+
+  // 選択中エンティティが1種類のみ存在する場合は単体でも表示
+  const total = lineCount + circleCount + arcCount + polyCount;
+  if(total === 0) { box.style.display='none'; return; }
+
+  let h = `<div style="font-size:9px;color:var(--dim);font-family:var(--mono);
+    padding:4px 8px;border-bottom:1px solid var(--border2);
+    display:flex;justify-content:space-between;align-items:center;">
+    <span>選択寸法</span>
+    <span style="color:var(--accent)">${total} 件選択中</span>
+  </div>`;
+
+  if(lineCount > 0) {
+    h += `<div style="padding:4px 8px;font-family:var(--mono);font-size:10px;
+      border-bottom:1px solid rgba(0,180,255,.06);">
+      <div style="display:flex;justify-content:space-between;">
+        <span style="color:var(--dim)">直線 × ${lineCount}</span>
+        <span style="color:var(--accent2);font-weight:bold;">
+          ${totalLen.toFixed(3)} <span style="color:var(--dim);font-size:9px">mm</span>
+        </span>
+      </div>
+    </div>`;
+  }
+  if(polyCount > 0) {
+    h += `<div style="padding:4px 8px;font-family:var(--mono);font-size:10px;
+      border-bottom:1px solid rgba(0,180,255,.06);">
+      <div style="display:flex;justify-content:space-between;">
+        <span style="color:var(--dim)">ポリライン × ${polyCount}</span>
+        <span style="color:var(--accent2);font-weight:bold;">
+          ${polyLen.toFixed(3)} <span style="color:var(--dim);font-size:9px">mm</span>
+        </span>
+      </div>
+    </div>`;
+  }
+  if(arcCount > 0) {
+    h += `<div style="padding:4px 8px;font-family:var(--mono);font-size:10px;
+      border-bottom:1px solid rgba(0,180,255,.06);">
+      <div style="display:flex;justify-content:space-between;">
+        <span style="color:var(--dim)">円弧 × ${arcCount}</span>
+        <span style="color:var(--accent2);font-weight:bold;">
+          ${totalArcLen.toFixed(3)} <span style="color:var(--dim);font-size:9px">mm</span>
+        </span>
+      </div>
+    </div>`;
+  }
+  if(circleCount > 0) {
+    h += `<div style="padding:4px 8px;font-family:var(--mono);font-size:10px;
+      border-bottom:1px solid rgba(0,180,255,.06);">
+      <div style="display:flex;justify-content:space-between;">
+        <span style="color:var(--dim)">円 × ${circleCount}</span>
+        <span style="color:var(--accent2);">
+          面積合計 ${totalCircleArea.toFixed(3)} <span style="color:var(--dim);font-size:9px">mm²</span>
+        </span>
+      </div>
+    </div>`;
+  }
+  // 合計（LINE+POLY+ARC）
+  const totalLength = totalLen + polyLen + totalArcLen;
+  if(totalLength > 0) {
+    h += `<div style="padding:5px 8px;font-family:var(--mono);font-size:11px;
+      background:rgba(0,180,255,.06);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="color:var(--accent);font-weight:bold;">合計長さ</span>
+        <span style="color:#00ffd0;font-size:13px;font-weight:bold;">
+          ${totalLength.toFixed(3)} <span style="color:var(--dim);font-size:9px">mm</span>
+        </span>
+      </div>
+    </div>`;
+  }
+
+  box.innerHTML = h;
+  box.style.display = 'block';
+}
+
 function clearSelection(){
   S.selectedEnt = null;
   S.selectedChain = new Set();
@@ -1661,6 +1773,8 @@ function clearSelection(){
   if(ib){ ib.style.display='none'; ib.innerHTML=''; }
   const ie = document.getElementById('inspEmpty');
   if(ie) ie.style.display='';
+  const sb = document.getElementById('selStatsBox');
+  if(sb) sb.style.display='none';
   filterEntList();
   redrawDXF();
 }
@@ -2291,6 +2405,7 @@ window.addEventListener('mouseup',e=>{
         const idx=all.findIndex(i=>i.e===hit);
         showInspector(hit,idx>=0?all[idx].t:null);
         addRecent(hit);
+        calcSelectionStats();
         filterEntList();
         redrawDXF();
         setSideTab('inspect');
@@ -3173,6 +3288,14 @@ async function parseDWG(buffer) {
     }
   }
 
+  // 寸法合計ボックスを st-inspect の inspEmpty 直前に注入
+  const stInspect2 = document.getElementById('st-inspect');
+  if(stInspect2) {
+    const sb = document.createElement('div');
+    sb.id = 'selStatsBox';
+    sb.style.cssText = 'display:none;border-bottom:1px solid var(--border2);';
+    stInspect2.insertBefore(sb, stInspect2.firstChild);
+  }
   const stInspect = document.getElementById('st-inspect');
   if(stInspect) {
     const recentBox = document.createElement('div');
@@ -4515,7 +4638,7 @@ window.LAYER_COLORS = LAYER_COLORS
 window.LANG = typeof LANG !== 'undefined' ? LANG : null
 
 const __viewerExports = {
-  updateMinimap, buildPartGroups, renderPartGroups,
+  updateMinimap, buildPartGroups, renderPartGroups, calcSelectionStats,
   getLayerColor, aciToHex, filterXMarks, parseDXF, readEntPairs, parseOneEntity,
   expandInsert, applyAci, buildEnt, eKey, diffDXF, entBounds, computeBounds,
   layerCenter, W, matchRadius, classifyEntity, analyzeSemantics, semColor,
