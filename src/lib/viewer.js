@@ -41,6 +41,9 @@ const S={
 function buildChain(e) {
   const result = new Set();
   if(!e || e.type !== 'LINE') return result;
+  // 部品外形線・ハッチング・寸法線はチェーン追跡しない
+  const sem = e._sem || 'other';
+  if(sem === 'outline' || sem === 'hatch' || sem === 'dimension') return result;
   const allEnts = S.f1 && S.f1.parsed ? S.f1.parsed.entities : [];
   const layerLines = allEnts.filter(l => l.type === 'LINE' && l.layer === e.layer);
   const bW = S.bounds ? S.bounds.maxX - S.bounds.minX : 10000;
@@ -567,8 +570,19 @@ function analyzeSemantics(entities){
   Object.entries(layerLines).forEach(([l,{total,short}])=>{
     if(total>5&&short/total>0.65) hatchLayers.add(l);
   });
+  // レイヤー内の平均線長を計算
+  const layerAvgLen={};
+  Object.keys(layerLines).forEach(l=>{
+    const lens=entities.filter(e=>e.type==='LINE'&&e.layer===l)
+      .map(e=>Math.hypot(e.x2-e.x1,e.y2-e.y1));
+    layerAvgLen[l]=lens.reduce((a,b)=>a+b,0)/(lens.length||1);
+  });
   entities.forEach(e=>{
-    if(e.type==='LINE'&&hatchLayers.has(e.layer)) e._sem='hatch';
+    if(e.type==='LINE'&&hatchLayers.has(e.layer)){
+      const len=Math.hypot(e.x2-e.x1,e.y2-e.y1);
+      // 平均の3倍超の長さは引き込み線とみなしてハッチング再分類しない
+      if(len<=layerAvgLen[e.layer]*3) e._sem='hatch';
+    }
   });
 
   // Count per semantic type
@@ -1618,14 +1632,21 @@ function findNearbyTexts(e, maxDist) {
         allPts.set(`${Math.round(px)},${Math.round(py)}`,[px,py]);
       }
     }
+    // 選択線自体の中点も検索ポイントに追加
+    const mx=(e.x1+e.x2)/2, my=(e.y1+e.y2)/2;
+    allPts.set('_mid_', [mx, my]);
+
     const results=[]; const seen=new Set();
     for(const [px,py] of allPts.values()){
       for(const circ of circleEnts){
         const dc=Math.hypot(px-circ.cx,py-circ.cy);
-        if(Math.abs(dc-circ.r)<circ.r*0.85){
+        // 検索点から searchR 以内にある円、またはその円周上に検索点がある場合
+        if(dc<=searchR||Math.abs(dc-circ.r)<circ.r*0.85){
           for(const t of textEnts){
+            // 円の中心から半径1.5倍以内のテキストをバルーン番号として取得
             if(Math.hypot(t.x-circ.cx,t.y-circ.cy)<circ.r*1.5&&!seen.has(t.text)){
-              seen.add(t.text); results.push({text:t.text.trim(),dist:Math.hypot(t.x-px,t.y-py),layer:t.layer});
+              seen.add(t.text);
+              results.push({text:t.text.trim(),dist:Math.hypot(t.x-px,t.y-py),layer:t.layer});
             }
           }
         }
@@ -1825,27 +1846,7 @@ window.addEventListener('mousemove',e=>{
     S.lastMouse={x:e.clientX,y:e.clientY};
     if(S.f1&&S.f1.type==='dxf')redrawDXFRaf();else redrawPDF();
   }
-  // Tooltip on hover (キャンバス内のみ)
-  if(!S.dragging&&S.f1&&S.f1.type==='dxf'){
-    const rect=cw.getBoundingClientRect();
-    const mx=e.clientX-rect.left,my=e.clientY-rect.top;
-    const tt=document.getElementById('tooltip');
-    // マウスがcanvasWrap内にある場合のみ表示
-    if(mx>=0&&my>=0&&mx<=rect.width&&my<=rect.height){
-      const hit=hitTest(mx,my);
-      if(hit){
-        tt.style.display='block';
-        tt.style.left=(e.clientX+12)+'px';
-        tt.style.top=(e.clientY-20)+'px';
-        document.getElementById('ttType').textContent=hit.type;
-        const ttTexts = findNearbyTexts(hit, null).slice(0,4).map(t=>t.text).join(' / ');
-        const ttDetail = entDetail(hit)+' | '+hit.layer;
-        document.getElementById('ttBody').textContent = ttTexts ? ttTexts + '\n' + ttDetail : ttDetail;
-      }else tt.style.display='none';
-    }else{
-      tt.style.display='none';
-    }
-  }
+  // ホバーツールチップは廃止（クリック時のみ表示）
 });
 window.addEventListener('mouseup',e=>{
   if(S.tab==='3d'){if(typeof T3!=='undefined'&&T3.mouse)T3.mouse.down=false;return;}
@@ -1865,6 +1866,17 @@ window.addEventListener('mouseup',e=>{
         filterEntList();
         redrawDXF();
         setSideTab('inspect');
+        // LINE以外のみツールチップを1秒表示
+        if(hit.type!=='LINE'){
+          const tt=document.getElementById('tooltip');
+          tt.style.display='block';
+          tt.style.left=(e.clientX+12)+'px';
+          tt.style.top=(e.clientY-20)+'px';
+          document.getElementById('ttType').textContent=hit.type;
+          const ttDetail=entDetail(hit)+' | '+hit.layer;
+          document.getElementById('ttBody').textContent=ttDetail;
+          setTimeout(()=>{tt.style.display='none';},1000);
+        }
       }
     }
   }
@@ -2617,8 +2629,17 @@ async function parseDWG(buffer) {
     const txt=item.dataset.copy||item.querySelector('div')?.textContent||'';
     if(navigator.clipboard&&txt){
       navigator.clipboard.writeText(txt).then(()=>{
-        item.style.background='rgba(0,255,208,.1)';
-        setTimeout(()=>item.style.background='',800);
+        item.style.background='rgba(0,255,208,.15)';
+        // ✓ コピー済みバッジを表示
+        const badge=document.createElement('span');
+        badge.textContent='✓ コピー済み';
+        badge.style.cssText='position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:9px;color:#00ffd0;font-family:var(--mono);pointer-events:none;';
+        item.style.position='relative';
+        item.appendChild(badge);
+        setTimeout(()=>{
+          item.style.background='';
+          badge.remove();
+        },1200);
       });
     }
   });
