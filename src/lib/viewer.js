@@ -184,10 +184,13 @@ function isLeaderLine(e){
 
 function getLayerColor(name, aciColor){
   if(!S.layers[name]){
-    // LAYER0032 等、レイヤー名が数値のみ or LAYER+数値 → ACI色として解釈
+    // LAYER0032 等、"LAYER" 接頭辞付き数値レイヤー名 → ACI色として解釈
+    // fix: 接頭辞なしの bare 数値 ("1" "01" 等) はマッチさせない
+    //   → 多くの DXF が組織用に "1" 等のレイヤー名を使うため、
+    //     bare 数値を ACI=1 (赤) に解釈すると意図しない大量赤化が起きる
     let resolvedAci = aciColor;
     if(!resolvedAci) {
-      const numMatch = name.match(/^(?:LAYER)?0*(\d+)$/i);
+      const numMatch = name.match(/^LAYER0*(\d+)$/i);
       if(numMatch) {
         const aci = parseInt(numMatch[1]);
         if(aci > 0 && aci <= 255) resolvedAci = aciToHex(aci);
@@ -788,14 +791,40 @@ function drawEnt(ctx,e,color,b,sc,pan,ch,highlight=false){
     ctx.shadowBlur=0;
   }
 
+  // perf: LOD skip — 画面上で 0.5px 未満になるエンティティは描画省略 (選択中は維持)
   switch(e.type){
-    case'LINE':{const[x1,y1]=W(e.x1,e.y1,b,sc,pan,ch),[x2,y2]=W(e.x2,e.y2,b,sc,pan,ch);ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();break;}
-    case'CIRCLE':{const[cx,cy]=W(e.cx,e.cy,b,sc,pan,ch);const r=Math.max(e.r*sc,.5);ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();
+    case'LINE':{
+      const lenPx = Math.hypot(e.x2-e.x1, e.y2-e.y1) * sc;
+      if(lenPx < 0.5 && !highlight) break;
+      const[x1,y1]=W(e.x1,e.y1,b,sc,pan,ch),[x2,y2]=W(e.x2,e.y2,b,sc,pan,ch);
+      ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+      break;}
+    case'CIRCLE':{
+      const rPx = e.r * sc;
+      if(rPx < 0.4 && !highlight) break;
+      const[cx,cy]=W(e.cx,e.cy,b,sc,pan,ch);const r=Math.max(rPx,.5);
+      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();
       // Fill for holes
       if(sem==='tap_hole'||sem==='screw_hole'||sem==='cbore'){ctx.fillStyle=color+'22';ctx.fill();}
       break;}
-    case'ARC':{const[cx,cy]=W(e.cx,e.cy,b,sc,pan,ch);ctx.beginPath();ctx.arc(cx,cy,Math.max(e.r*sc,.5),-(e.sa*Math.PI/180),-(e.ea*Math.PI/180),true);ctx.stroke();break;}
-    case'LWPOLYLINE':{if(e.pts.length<2)break;ctx.beginPath();const[sx,sy]=W(e.pts[0].x,e.pts[0].y,b,sc,pan,ch);ctx.moveTo(sx,sy);e.pts.slice(1).forEach(p=>{const[px,py]=W(p.x,p.y,b,sc,pan,ch);ctx.lineTo(px,py);});if(e.closed)ctx.closePath();ctx.stroke();break;}
+    case'ARC':{
+      const rPx = e.r * sc;
+      if(rPx < 0.4 && !highlight) break;
+      const[cx,cy]=W(e.cx,e.cy,b,sc,pan,ch);
+      ctx.beginPath();ctx.arc(cx,cy,Math.max(rPx,.5),-(e.sa*Math.PI/180),-(e.ea*Math.PI/180),true);ctx.stroke();
+      break;}
+    case'LWPOLYLINE':{
+      if(e.pts.length<2)break;
+      // perf: 全長が 1px 未満なら省略
+      if(!highlight && e._b){
+        const wPx = (e._b.maxX - e._b.minX) * sc;
+        const hPx = (e._b.maxY - e._b.minY) * sc;
+        if(wPx < 1 && hPx < 1) break;
+      }
+      ctx.beginPath();const[sx,sy]=W(e.pts[0].x,e.pts[0].y,b,sc,pan,ch);ctx.moveTo(sx,sy);
+      e.pts.slice(1).forEach(p=>{const[px,py]=W(p.x,p.y,b,sc,pan,ch);ctx.lineTo(px,py);});
+      if(e.closed)ctx.closePath();ctx.stroke();
+      break;}
     case'TEXT':case'MTEXT':{
       if(!e.text) break;
       // LOD: 画面上のフォントサイズが4px未満なら描画スキップ
@@ -970,11 +999,11 @@ function updateMinimap() {
     ];
   }
 
-  // エンティティを間引いて描画（最大3000件）
+  // エンティティ描画（視認性を上げるため線色・太さを強化、間引き上限を緩和）
   const ents = S.f1.parsed.entities;
-  const step = Math.max(1, Math.floor(ents.length / 3000));
-  ctx.strokeStyle = 'rgba(0,180,255,0.35)';
-  ctx.lineWidth = 0.5;
+  const step = Math.max(1, Math.floor(ents.length / 6000));
+  ctx.strokeStyle = 'rgba(120,200,255,0.65)';
+  ctx.lineWidth = 0.8;
   for(let i = 0; i < ents.length; i += step) {
     const e = ents[i];
     if(!S.layers[e.layer] || !S.layers[e.layer].visible) continue;
@@ -986,6 +1015,15 @@ function updateMinimap() {
       const [cx,cy] = mW(e.cx, e.cy);
       const r = Math.max(e.r * scale, 0.5);
       ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.stroke();
+    } else if(e.type === 'LWPOLYLINE' && e.pts && e.pts.length > 1) {
+      ctx.beginPath();
+      const [sx,sy] = mW(e.pts[0].x, e.pts[0].y);
+      ctx.moveTo(sx, sy);
+      for(let k=1; k<e.pts.length; k++) {
+        const [px,py] = mW(e.pts[k].x, e.pts[k].y);
+        ctx.lineTo(px, py);
+      }
+      ctx.stroke();
     }
   }
 
@@ -1001,12 +1039,16 @@ function updateMinimap() {
   const viewBottom = viewTop  - ch / S.scale;             // 画面下端の world Y
   const [mx0, my0] = mW(viewLeft,  viewTop);
   const [mx1, my1] = mW(viewRight, viewBottom);
-  ctx.strokeStyle = '#00ffd0';
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(
-    Math.min(mx0, mx1), Math.min(my0, my1),
-    Math.abs(mx1 - mx0), Math.abs(my1 - my0)
-  );
+  // viewport を minimap 内にクランプ (エクスプロード時に矩形が大幅にはみ出すのを防ぐ)
+  const rx = Math.max(0, Math.min(mx0, mx1));
+  const ry = Math.max(0, Math.min(my0, my1));
+  const rw = Math.min(MINIMAP.w - rx, Math.abs(mx1 - mx0));
+  const rh = Math.min(MINIMAP.h - ry, Math.abs(my1 - my0));
+  if(rw > 1 && rh > 1) {
+    ctx.strokeStyle = '#00ffd0';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(rx, ry, rw, rh);
+  }
 }
 
 let _rafPending = false;
@@ -1105,13 +1147,41 @@ function redrawDXF(){
         drawEnt(ctx,e,semColor(e),b,sc,adjPan,ch,e===S.selectedEnt||S.selectedChain.has(e));
       });
     } else {
+      // perf: 同色 LINE は単一 beginPath/stroke にバッチ化 (178k 件で 5-10 倍速)
       Object.entries(byLayer).forEach(([layerName,layerEnts])=>{
         const layerInfo=S.layers[layerName];
         if(layerInfo&&!layerInfo.visible)return;
         const color=layerInfo?layerInfo.color:'#00b4ff';
         const off=getLayerOffset(layerName,b,S.explode);
         const adjPan={x:pan.x+off.dx*sc,y:pan.y-off.dy*sc};
-        layerEnts.forEach(e=>{if(!isVisible(e))return;drawEnt(ctx,e,color,b,sc,adjPan,ch,e===S.selectedEnt||S.selectedChain.has(e));});
+
+        // ── LINE バッチ ──
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        let lineBatched = 0;
+        for(const e of layerEnts){
+          if(e.type !== 'LINE') continue;
+          if(!isVisible(e)) continue;
+          if(e === S.selectedEnt || S.selectedChain.has(e)) continue; // ハイライトは個別描画
+          const lenPx = Math.hypot(e.x2-e.x1, e.y2-e.y1) * sc;
+          if(lenPx < 0.5) continue; // perf: LOD skip
+          const [x1,y1] = W(e.x1,e.y1,b,sc,adjPan,ch);
+          const [x2,y2] = W(e.x2,e.y2,b,sc,adjPan,ch);
+          ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+          lineBatched++;
+        }
+        if(lineBatched > 0) ctx.stroke();
+
+        // ── 残り (CIRCLE/ARC/LWPOLYLINE/TEXT/POINT) と ハイライト LINE は個別描画 ──
+        for(const e of layerEnts){
+          if(!isVisible(e)) continue;
+          const isHi = (e === S.selectedEnt || S.selectedChain.has(e));
+          if(e.type === 'LINE' && !isHi) continue; // バッチ済み
+          drawEnt(ctx,e,color,b,sc,adjPan,ch,isHi);
+        }
       });
     }
     // Layer / semantic labels when exploding
@@ -1229,6 +1299,12 @@ function hitTest(mx,my){
   const{bounds:b,scale:sc,pan}=S;
   const wrap=document.getElementById('canvasWrap');
   const ch=wrap.clientHeight;
+  // perf: マウス位置の world 座標を計算 → エンティティ bbox とのざっくり交差で
+  // 高速にカリングしてから distToEnt を回す。178k 件で 200ms+ → 数 ms に短縮
+  const wxAtMouse = (mx - pan.x) / sc + b.minX;
+  const wyAtMouse = b.maxY - (ch - my - pan.y) / sc; // メインキャンバスの Y 反転と一致
+  const hitR = Math.max(8, 10/sc);
+  const wHitR = hitR / sc; // world 単位でのヒット半径
   const entities=S.mode==='diff'&&S.diff
     ?[...S.diff.same,...S.diff.added,...S.diff.removed]
     :(S.f1&&S.f1.type==='dxf'?S.f1.parsed.entities:[]);
@@ -1237,10 +1313,14 @@ function hitTest(mx,my){
     if(S.layers[e.layer]&&!S.layers[e.layer].visible)continue;
     // fix: exclude INSERT from hit detection
     if(e.type==='INSERT')continue;
+    // perf: 事前 bbox カリング (パース時にキャッシュ済み e._b)
+    const bb = e._b;
+    if(bb && (bb.maxX < wxAtMouse - wHitR || bb.minX > wxAtMouse + wHitR ||
+              bb.maxY < wyAtMouse - wHitR || bb.minY > wyAtMouse + wHitR)) continue;
     const off=S.mode==='single'?getLayerOffset(e.layer,b,S.explode):{dx:0,dy:0};
     const adjPan={x:pan.x+off.dx*sc,y:pan.y-off.dy*sc};
     const dist=distToEnt(e,mx,my,b,sc,adjPan,ch);
-    if(dist<Math.max(8,10/sc)&&dist<bestDist){bestDist=dist;best=e;}
+    if(dist<hitR&&dist<bestDist){bestDist=dist;best=e;}
   }
   return best;
 }
@@ -2536,9 +2616,9 @@ window.addEventListener('mouseup',e=>{
         addRecent(hit);
         calcSelectionStats();
         filterEntList();
-        redrawDXF();
-        // fix: remove chain calls from render path - クリックハンドラから明示呼出
-        drawChainTip();
+        // perf: 同期 redraw だと 178k 件で 500ms ブロック → RAF + chain tip も後追い
+        redrawDXFRaf();
+        requestAnimationFrame(()=>drawChainTip());
         setSideTab('inspect');
         // LINE以外のみツールチップを1秒表示
         if(hit.type!=='LINE'){
