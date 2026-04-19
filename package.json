@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "ROBA★STAR DIFF - 図面解析・差分比較システム",
+  "description": "ROBA★STAR CAD - 図面解析・差分比較システム",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

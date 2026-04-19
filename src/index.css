@@ -22,6 +22,7 @@ header.collapsed{padding:0;max-height:0;border-bottom-color:transparent;}
 .logo{width:32px;height:32px;border:1.5px solid var(--accent);display:flex;align-items:center;justify-content:center;position:relative;flex-shrink:0;}
 .logo::after{content:'';position:absolute;inset:3px;border:1px solid rgba(0,180,255,0.28);}
 .logo svg{width:16px;height:16px;}
+.logo img{width:22px;height:22px;display:block;position:relative;z-index:1;}
 .h-title{font-family:var(--mono);font-size:18px;color:var(--accent);letter-spacing:.12em;}
 .h-sub{font-family:var(--mono);font-size:15px;color:var(--dim);letter-spacing:.1em;margin-top:2px;}
 .h-mode{margin-left:auto;display:flex;gap:4px;}

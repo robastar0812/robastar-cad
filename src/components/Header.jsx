@@ -7,16 +7,10 @@ export default function Header({ authSlot }) {
     <>
       <header>
         <div className="logo">
-          <svg viewBox="0 0 16 16" fill="none" stroke="#00b4ff" strokeWidth="1.5">
-            <rect x="1" y="1" width="14" height="14" rx="1" />
-            <line x1="1" y1="6" x2="15" y2="6" />
-            <line x1="6" y1="6" x2="6" y2="15" />
-            <line x1="9" y1="10" x2="13" y2="10" />
-            <line x1="9" y1="13" x2="13" y2="13" />
-          </svg>
+          <img src="/favicon-96x96.png" alt="ROBA★STAR CAD" width="22" height="22" />
         </div>
         <div>
-          <div className="h-title">ROBA★STAR DIFF</div>
+          <div className="h-title">ROBA★STAR CAD</div>
           <div className="h-sub">図面解析・差分比較システム</div>
         </div>
         <button id="hdrHelpBtn" onClick={() => window.showHelp?.()} title="操作説明">

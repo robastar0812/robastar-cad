@@ -15,7 +15,7 @@ export default function HelpModal() {
     <div id="helpModal">
       <div id="helpInner">
         <div id="helpHeader">
-          <h1>ROBA★STAR DIFF — 操作説明</h1>
+          <h1>ROBA★STAR CAD — 操作説明</h1>
           <button id="helpClose" onClick={() => window.hideHelp?.()}>✕ 閉じる</button>
         </div>
         <div id="helpTabs">
@@ -31,7 +31,7 @@ export default function HelpModal() {
         </div>
         <div id="helpBody">
           <section className="help-section active">
-            <h2 className="help-h2">ROBA★STAR DIFF とは</h2>
+            <h2 className="help-h2">ROBA★STAR CAD とは</h2>
             <p className="help-p">
               DXF / PDF / STL / OBJ / STEP / IGES / PLY / OFF / 画像に対応した図面解析・差分比較ビューアです。
               単体展開モードで1ファイルを詳細解析、差分比較モードで2ファイル間の違いを可視化します。

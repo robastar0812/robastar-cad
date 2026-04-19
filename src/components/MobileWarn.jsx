@@ -13,7 +13,7 @@ export default function MobileWarn() {
     <div id="mobileWarn" style={{ display: 'flex' }}>
       <div style={{ fontSize: '48px' }}>🦁</div>
       <div style={{ fontFamily: 'monospace', fontSize: '18px', color: '#00b4ff', fontWeight: 'bold' }}>
-        ROBA★STAR DIFF
+        ROBA★STAR CAD
       </div>
       <div style={{ fontFamily: 'monospace', fontSize: '13px', color: '#667788', textAlign: 'center', lineHeight: 1.8 }}>
         本アプリはPC・タブレット専用です<br />

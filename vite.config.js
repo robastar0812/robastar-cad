@@ -14,8 +14,8 @@ export default defineConfig({
         'apple-touch-icon.png'
       ],
       manifest: {
-        name: 'ROBA★STAR DIFF',
-        short_name: 'ROBA DIFF',
+        name: 'ROBA★STAR CAD',
+        short_name: 'ROBA CAD',
         description: '図面解析・差分比較システム',
         theme_color: '#030b18',
         background_color: '#060a14',
