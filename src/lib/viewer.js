@@ -160,7 +160,8 @@ function buildChain(e) {
 const LAYER_COLORS=['#00b4ff','#00ffd0','#ffc040','#ff6080','#a0e0ff','#80ffb0','#ffb080','#e080ff','#40d0a0','#d0a040'];
 let layerColorIdx=0;
 // 図枠系レイヤー名パターン（デフォルト非表示）
-const FRAME_LAYER_PAT = /^(ZUWAKU|FRAME|BORDER|TITLE|TITLEBLOCK|枠|図枠|表題欄)/i;
+// fix: TITLE$ anchor
+const FRAME_LAYER_PAT = /^(ZUWAKU|FRAME|BORDER|TITLEBLOCK|TITLE$|枠|図枠|表題欄)/i;
 
 function getLayerColor(name, aciColor){
   if(!S.layers[name]){
@@ -2329,14 +2330,16 @@ function showInspector(e,t){
       h+=`<div class="insp-kv"><span class="insp-k">位置 Y</span><span class="insp-v hi">${f(e.y)}</span></div>`;
       h+=`<div class="insp-kv"><span class="insp-k">文字高さ</span><span class="insp-v">${f(e.h)}</span></div>`;
       // コロン分離表示
-      const colonIdx = e.text.indexOf(':');
+      // fix: null-safe
+      const safeText = e.text || '';
+      const colonIdx = safeText.indexOf(':');
       if(colonIdx > 0) {
-        const partNo  = e.text.slice(0, colonIdx).trim();
-        const comment = e.text.slice(colonIdx+1).trim();
+        const partNo  = safeText.slice(0, colonIdx).trim();
+        const comment = safeText.slice(colonIdx+1).trim();
         h+=`<div class="insp-kv"><span class="insp-k">部品番号</span><span class="insp-v" style="color:var(--accent2);font-weight:bold">${esc(partNo)}</span></div>`;
         h+=`<div class="insp-kv"><span class="insp-k">コメント</span><span class="insp-v" style="color:var(--dim)">${esc(comment)}</span></div>`;
       } else {
-        h+=`<div class="insp-kv"><span class="insp-k">内容</span><span class="insp-v" style="color:var(--accent2)">${esc(e.text)}</span></div>`;
+        h+=`<div class="insp-kv"><span class="insp-k">内容</span><span class="insp-v" style="color:var(--accent2)">${esc(safeText)}</span></div>`;
       }
       break;}
   }
@@ -4668,6 +4671,10 @@ function parseIGESInfo(text){
 // ── 取説モーダル ──
 function showHelp(){
   document.getElementById('helpModal').classList.add('show');
+  // fix: 2回目を開いた時に前回のタブ位置が残らないよう、常にタブ0へリセット
+  switchHelpTab(0);
+  const body = document.getElementById('helpBody');
+  if(body) body.scrollTop = 0;
 }
 function hideHelp(){
   document.getElementById('helpModal').classList.remove('show');
