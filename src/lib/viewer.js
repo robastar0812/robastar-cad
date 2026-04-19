@@ -2606,6 +2606,17 @@ function setMode(mode){
   }
   // Re-run if files loaded
   S.page=0;
+  // fix: モード切替時に選択状態をクリア
+  //   差分→単体 で戻ると、前回の selectedChain が残って意味不明な
+  //   白ハイライトがレイヤー単位で表示されてしまう
+  S.selectedEnt = null;
+  S.selectedChain = new Set();
+  const _ib = document.getElementById('inspBody');
+  if(_ib){ _ib.style.display='none'; _ib.innerHTML=''; }
+  const _ie = document.getElementById('inspEmpty');
+  if(_ie) _ie.style.display='';
+  const _sb = document.getElementById('selStatsBox');
+  if(_sb) _sb.style.display='none';
   if(S.f1){
     // perf: 重い runMain を即時実行するとローディング表示がペイント前にブロックされる。
     // 先にオーバーレイを出してから 2 フレーム待ち → 必ず描画されてから処理開始
