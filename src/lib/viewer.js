@@ -638,14 +638,16 @@ function classifyEntity(e, allCircles){
   for(const[type,pat] of Object.entries(LAYER_PATTERNS)){
     if(pat.test(e.layer)) return type;
   }
-  // 番号付きレイヤー (例: C5LAYER20, D1, E3) → レイヤー番号で分類
+  // 番号付きレイヤー (例: C1, H2, D3, T4) → 短い接頭辞のみで分類
+  // fix: "CSLAYER" "HEX" "DRAFT" など長い接頭辞を center/hidden/dimension に
+  //   誤分類していた (CSLAYER → C で始まるため → 全エンティティが赤い中心線扱い)
   const lnum = e.layer.match(/^([A-Za-z]+)([0-9]+)/);
   if(lnum){
     const prefix = lnum[1].toUpperCase();
-    if(/^C/.test(prefix)) return 'center';
-    if(/^H/.test(prefix)) return 'hidden';
-    if(/^D/.test(prefix)) return 'dimension';
-    if(/^T/.test(prefix)) return 'text_ent';
+    if(prefix === 'C' || prefix === 'CEN' || prefix === 'CENTER') return 'center';
+    if(prefix === 'H' || prefix === 'HID' || prefix === 'HIDDEN') return 'hidden';
+    if(prefix === 'D' || prefix === 'DIM' || prefix === 'DIMENSION') return 'dimension';
+    if(prefix === 'T' || prefix === 'TXT' || prefix === 'TEXT') return 'text_ent';
   }
 
   // Geometry-based for circles
