@@ -147,11 +147,15 @@ function buildChain(e) {
 // Layer palette
 const LAYER_COLORS=['#00b4ff','#00ffd0','#ffc040','#ff6080','#a0e0ff','#80ffb0','#ffb080','#e080ff','#40d0a0','#d0a040'];
 let layerColorIdx=0;
+// 図枠系レイヤー名パターン（デフォルト非表示）
+const FRAME_LAYER_PAT = /^(ZUWAKU|FRAME|BORDER|TITLE|TITLEBLOCK|枠|図枠|表題欄)/i;
+
 function getLayerColor(name, aciColor){
   if(!S.layers[name]){
-    // ACI色があればそれを使う、なければパレット色
     const col = aciColor || LAYER_COLORS[layerColorIdx%LAYER_COLORS.length];
-    S.layers[name]={visible:true,color:col,count:0};
+    // 図枠系レイヤーはデフォルト非表示
+    const visible = !FRAME_LAYER_PAT.test(name);
+    S.layers[name]={visible,color:col,count:0};
     if(!aciColor) layerColorIdx++;
   }
   return S.layers[name].color;
