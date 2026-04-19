@@ -598,10 +598,14 @@ function drawEnt(ctx,e,color,b,sc,pan,ch,highlight=false){
   else if(sem==='center')ctx.setLineDash([10*lw,3*lw,2*lw,3*lw]);
   else if(sem==='dimension')ctx.setLineDash([]);
   else ctx.setLineDash([]);
-  // Glow for holes
-  if(highlight||(sem==='tap_hole'||sem==='screw_hole'||sem==='cbore')){
-    ctx.shadowColor=color;ctx.shadowBlur=highlight?10:5;
-  }else ctx.shadowBlur=0;
+  // Glow only for highlighted entity (selected). Applying shadowBlur to every
+  // hole across 100K+ entities costs ~10× total render time, so we drop the
+  // per-hole glow and rely on the fill tint below to communicate hole state.
+  if(highlight){
+    ctx.shadowColor=color;ctx.shadowBlur=10;
+  }else{
+    ctx.shadowBlur=0;
+  }
 
   switch(e.type){
     case'LINE':{const[x1,y1]=W(e.x1,e.y1,b,sc,pan,ch),[x2,y2]=W(e.x2,e.y2,b,sc,pan,ch);ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();break;}
@@ -690,17 +694,25 @@ function redrawDXFRaf(){
 function redrawDXF(){
   const cv=document.getElementById('mainCanvas');
   const wrap=document.getElementById('canvasWrap');
-  // サイズが変わった時だけリセット（毎回やると描画がクリアされる）
+  // HiDPI 対応: 物理ピクセルでバッキングして CSS ピクセルに縮退表示。
+  // これを怠ると Retina / 高解像度ディスプレイでラインがにじんで「角ついた」
+  // ジャギー風に見える。
+  const dpr = Math.max(1, Math.min(window.devicePixelRatio||1, 2));
   const ww=wrap.clientWidth, wh=wrap.clientHeight;
-  if(cv.width!==ww||cv.height!==wh){cv.width=ww;cv.height=wh;}
+  const targetW = Math.floor(ww*dpr), targetH = Math.floor(wh*dpr);
+  if(cv.width!==targetW||cv.height!==targetH){
+    cv.width=targetW; cv.height=targetH;
+    cv.style.width=ww+'px'; cv.style.height=wh+'px';
+  }
   const ctx=cv.getContext('2d');
-  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,ww,wh);
 
   // DWG圧縮形式のwarnを最優先でカンバスに表示
   const dwgWarnMsg = S.f1&&S.f1.dwgWarn ? S.f1.dwgWarn
                    : S.f2&&S.f2.dwgWarn ? S.f2.dwgWarn : null;
   if(dwgWarnMsg){
-    const cw=cv.width, ch=cv.height;
+    const cw=ww, ch=wh;
     ctx.save();
     ctx.fillStyle='rgba(255,200,0,0.95)';
     ctx.font=`bold ${Math.max(14,cw/40)}px monospace`;
@@ -715,13 +727,31 @@ function redrawDXF(){
 
   if(!S.bounds)return;
   const{bounds:b,scale:sc,pan}=S;
-  const ch=cv.height;
+  const ch=wh; // 描画空間はCSSピクセル（setTransformでDPR適用済み）
+
+  // ── ビューポート カリング ──
+  // 現在画面が見ているワールド座標範囲を計算し、境界外のエンティティをスキップ。
+  // explode=0 の時のみ有効（explode時はレイヤーごとにオフセットが変わるため）。
+  const cullEnabled = S.explode < 0.01;
+  // 画面→ワールド変換: wx=(sx-pan.x)/sc+b.minX, wy=(ch-sy-pan.y)/sc+b.minY
+  // 可視領域に少し余白（lineWidth分）を持たせる
+  const padW = 2/sc;
+  const wxMin = (-pan.x)/sc + b.minX - padW;
+  const wxMax = (ww - pan.x)/sc + b.minX + padW;
+  const wyMin = (-pan.y)/sc + b.minY - padW;
+  const wyMax = (wh - pan.y)/sc + b.minY + padW;
+  const isVisible = (e) => {
+    if(!cullEnabled) return true;
+    const bb = e._b; // parse 時にキャッシュ済み
+    if(!bb) return true;
+    return !(bb.maxX < wxMin || bb.minX > wxMax || bb.maxY < wyMin || bb.minY > wyMax);
+  };
 
   if(S.mode==='diff'&&S.diff){
     const{diff,visLayers}=S;
-    if(visLayers.same)diff.same.forEach(e=>{if(S.layers[e.layer]&&!S.layers[e.layer].visible)return;drawEnt(ctx,e,DIFF_CLR.same,b,sc,pan,ch,e===S.selectedEnt);});
-    if(visLayers.del)diff.removed.forEach(e=>{if(S.layers[e.layer]&&!S.layers[e.layer].visible)return;drawEnt(ctx,e,DIFF_CLR.del,b,sc,pan,ch,e===S.selectedEnt);});
-    if(visLayers.add)diff.added.forEach(e=>{if(S.layers[e.layer]&&!S.layers[e.layer].visible)return;drawEnt(ctx,e,DIFF_CLR.add,b,sc,pan,ch,e===S.selectedEnt);});
+    if(visLayers.same)diff.same.forEach(e=>{if(!isVisible(e))return;if(S.layers[e.layer]&&!S.layers[e.layer].visible)return;drawEnt(ctx,e,DIFF_CLR.same,b,sc,pan,ch,e===S.selectedEnt);});
+    if(visLayers.del)diff.removed.forEach(e=>{if(!isVisible(e))return;if(S.layers[e.layer]&&!S.layers[e.layer].visible)return;drawEnt(ctx,e,DIFF_CLR.del,b,sc,pan,ch,e===S.selectedEnt);});
+    if(visLayers.add)diff.added.forEach(e=>{if(!isVisible(e))return;if(S.layers[e.layer]&&!S.layers[e.layer].visible)return;drawEnt(ctx,e,DIFF_CLR.add,b,sc,pan,ch,e===S.selectedEnt);});
   } else if(S.f1&&S.f1.type==='dxf'){
     const ents=S.f1.parsed.entities;
     const useSem = S.colorMode==='semantic';
@@ -735,6 +765,7 @@ function redrawDXF(){
 
     if(useSem){
       drawList.forEach(e=>{
+        if(!isVisible(e))return;
         const layerInfo=S.layers[e.layer];
         if(layerInfo&&!layerInfo.visible)return;
         const sem=e._sem||'other';
@@ -750,7 +781,7 @@ function redrawDXF(){
         const color=layerInfo?layerInfo.color:'#00b4ff';
         const off=getLayerOffset(layerName,b,S.explode);
         const adjPan={x:pan.x+off.dx*sc,y:pan.y-off.dy*sc};
-        layerEnts.forEach(e=>{drawEnt(ctx,e,color,b,sc,adjPan,ch,e===S.selectedEnt);});
+        layerEnts.forEach(e=>{if(!isVisible(e))return;drawEnt(ctx,e,color,b,sc,adjPan,ch,e===S.selectedEnt);});
       });
     }
     // Layer / semantic labels when exploding
@@ -1239,6 +1270,12 @@ async function runSingle(){
   if(f.type==='dxf'){
     S.bounds=computeBounds([f.parsed.entities]);
     S.diff=null;S.pixelDiff=null;S.singleCanvas=null;
+    // エンティティ境界ボックスをキャッシュ（ビューポートカリング用）
+    // 一度計算すれば redrawDXF の度に再計算する必要がない
+    if(!f._boundsCached){
+      for(const e of f.parsed.entities){ if(!e._b) e._b = entBounds(e); }
+      f._boundsCached=true;
+    }
     // Semantic analysis
     // analyzeSemantics はエンティティ変化時のみ実行（重い処理）
     if(!f._semCounts){
