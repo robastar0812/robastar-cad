@@ -94,6 +94,26 @@ export default function HelpModal() {
             <p>クリックした部品の履歴が詳細タブ下部に最大5件表示されます。クリックで再ジャンプできます。</p>
             <h3>部品番号グループ(一覧タブ)</h3>
             <p>同じ番号のバルーンが複数ある場合、一覧タブ上部にグループ表示されます。クリックで最初の出現箇所にジャンプします。</p>
+            <h3>部品番号とコメントの分離表示(詳細タブ)</h3>
+            <p>テキストに <code>:</code>(コロン)が含まれる場合、左側を「部品番号」、右側を「コメント」として詳細タブに分けて表示します。</p>
+            <table className="help-table">
+              <tbody>
+                <tr><td><code>A910C:COIL1,2</code></td><td>部品番号 = <b>A910C</b> / コメント = <b>COIL1,2</b></td></tr>
+                <tr><td><code>B003C:OUTPUT</code></td><td>部品番号 = <b>B003C</b> / コメント = <b>OUTPUT</b></td></tr>
+              </tbody>
+            </table>
+            <h3>選択寸法の自動合計(詳細タブ)</h3>
+            <p>線・円・円弧・ポリラインを選択すると、詳細タブ上部に種類別の本数と長さ・面積、および「合計長さ」が自動表示されます。</p>
+            <table className="help-table">
+              <tbody>
+                <tr><td>直線</td><td>選択された LINE の本数と長さ合計 (mm)</td></tr>
+                <tr><td>ポリライン</td><td>各セグメント長を加算 (mm)。閉合時は最終辺も含める</td></tr>
+                <tr><td>円弧</td><td>半径 × 角度から弧長を算出 (mm)</td></tr>
+                <tr><td>円</td><td>面積合計 (mm²)</td></tr>
+                <tr><td>合計長さ</td><td>直線・ポリライン・円弧の長さ総和 (mm)</td></tr>
+              </tbody>
+            </table>
+            <div className="help-tip">TIP: 引き込み線をクリックすると繋がった線がチェーン選択され、合計値も自動更新されます。</div>
           </div>
 
           {/* 3: 差分比較 */}
@@ -127,6 +147,16 @@ export default function HelpModal() {
             </table>
             <h3>凡例タブ(意味色)</h3>
             <p>意味分類ごとの色凡例が表示されます。各行をクリックしてその分類の表示/非表示を切り替えられます。</p>
+            <h3>図枠レイヤーの自動非表示</h3>
+            <p>図枠・表題欄系のレイヤーは読み込み時に自動で非表示になります(図面本体に集中するため)。レイヤー展開タブで該当レイヤーをクリックすれば再表示できます。</p>
+            <table className="help-table">
+              <tbody>
+                <tr><td>対象レイヤー名</td><td><code>ZUWAKU</code> / <code>FRAME</code> / <code>BORDER</code> / <code>TITLEBLOCK</code> / <code>TITLE</code> / <code>枠</code> / <code>図枠</code> / <code>表題欄</code> で始まるもの</td></tr>
+                <tr><td>再表示</td><td>レイヤー展開タブ → 該当行クリック</td></tr>
+                <tr><td>一括復活</td><td>「全表示」ボタンで全レイヤー表示</td></tr>
+              </tbody>
+            </table>
+            <div className="help-tip">TIP: <code>TITLETEXT</code> など <code>TITLE</code> 以降に文字が続く場合は通常レイヤーと判定され表示されます。</div>
           </div>
 
           {/* 5: 3Dビュー */}

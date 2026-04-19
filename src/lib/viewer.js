@@ -123,19 +123,21 @@ function renderSearchResults() {
 // ── 引き込み線チェーン構築 ──
 // クリックされた LINE から端点で繋がる全 LINE を辿り Set で返す
 function buildChain(e) {
-  const result = new Set();
-  if(!e || e.type !== 'LINE') return result;
-  // 部品外形線・ハッチング・寸法線はチェーン追跡しない
-  const sem = e._sem || 'other';
-  if(sem === 'outline' || sem === 'hatch' || sem === 'dimension') return result;
+  // fix: leader-layer guard for buildChain
+  // 引き込み線レイヤー以外（外形線/ハッチング/寸法線/図枠系レイヤー）はチェーン追跡しない
+  if(!isLeaderLine(e)) return new Set();
+
   const allEnts = S.f1 && S.f1.parsed ? S.f1.parsed.entities : [];
   const layerLines = allEnts.filter(l => l.type === 'LINE' && l.layer === e.layer);
   const bW = S.bounds ? S.bounds.maxX - S.bounds.minX : 10000;
   const TOL = Math.max(bW * 0.0005, 0.5);
   const baseLen = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+  const result = new Set();
   result.add(e);
   let frontier = [e];
+  // fix: enforce hop limit 3
   for(let hop = 0; hop < 3; hop++) {
+    if(hop > 3) break; // 念のため明示
     const next = [];
     for(const cur of frontier) {
       for(const l of layerLines) {
@@ -147,12 +149,19 @@ function buildChain(e) {
           Math.hypot(cur.x1 - l.x2, cur.y1 - l.y2) <= TOL ||
           Math.hypot(cur.x2 - l.x1, cur.y2 - l.y1) <= TOL ||
           Math.hypot(cur.x2 - l.x2, cur.y2 - l.y2) <= TOL
-        ) { result.add(l); next.push(l); }
+        ) {
+          result.add(l); next.push(l);
+          // fix: enforce chain size limit 8
+          if(result.size > 8) return new Set();
+        }
       }
     }
-    if(!next.length || result.size > 8) break;
+    if(!next.length) break;
     frontier = next;
   }
+  // fix: skip drawChainTip when chain is empty
+  // 単独 LINE（隣接なし）は赤丸対象外 → 空 Set を返して描画させない
+  if(result.size <= 1) return new Set();
   return result;
 }
 
@@ -162,6 +171,16 @@ let layerColorIdx=0;
 // 図枠系レイヤー名パターン（デフォルト非表示）
 // fix: TITLE$ anchor
 const FRAME_LAYER_PAT = /^(ZUWAKU|FRAME|BORDER|TITLEBLOCK|TITLE$|枠|図枠|表題欄)/i;
+
+// fix: skip chain/tip for non-leader lines
+// 引き込み線判定: LINE 限定で、外形線/ハッチング/寸法線/図枠 系を除外
+function isLeaderLine(e){
+  if(!e || e.type !== 'LINE') return false;
+  const sem = e._sem || 'other';
+  if(sem === 'outline' || sem === 'hatch' || sem === 'dimension') return false;
+  if(e.layer && FRAME_LAYER_PAT.test(e.layer)) return false;
+  return true;
+}
 
 function getLayerColor(name, aciColor){
   if(!S.layers[name]){
@@ -792,6 +811,12 @@ function drawEnt(ctx,e,color,b,sc,pan,ch,highlight=false){
       const rot = (e.rot||0);
       const ha  = (e.ha||0);
 
+      // fix: fixed text color regardless of layer
+      // テキスト色はレイヤー色/ACI色から切り離して固定:
+      //   選択中 → 白 / ZUWAKU レイヤー → 薄グレー / 通常 → 明るいグレー
+      const isZuwakuText = e.layer && /^ZUWAKU/i.test(e.layer);
+      const textColor = highlight ? '#ffffff' : (isZuwakuText ? '#aabbcc' : '#e8e8e8');
+
       if(ha===5){
         // ── ha=5 FIT モード ──
         // x1,y1=挿入点(left), x2,y2=位置合わせ点(right/top for rot=90)
@@ -813,7 +838,7 @@ function drawEnt(ctx,e,color,b,sc,pan,ch,highlight=false){
         // DXFのrot=degreeを反時計回りで変換（Canvasは時計回りが正）
         if(Math.abs(rot)>0.1) ctx.rotate(-rot*Math.PI/180);
         ctx.scale(scaleX,1);
-        ctx.fillStyle=color;
+        ctx.fillStyle=textColor;
         ctx.fillText(txt,0,0);
         ctx.restore();
       } else {
@@ -826,7 +851,7 @@ function drawEnt(ctx,e,color,b,sc,pan,ch,highlight=false){
         if(Math.abs(rot)>0.1) ctx.rotate(-rot*Math.PI/180);
         const wf=e.wf||1;
         if(Math.abs(wf-1)>0.02) ctx.scale(wf,1);
-        ctx.fillStyle=color;
+        ctx.fillStyle=textColor;
         ctx.fillText(txt,0,0);
         ctx.restore();
         ctx.textAlign='left';
@@ -851,8 +876,20 @@ function getLayerOffset(layerName,b,explodeFactor){
 }
 
 // ── 選択チェーンの末端点に赤丸マーカーを描画 ──
-function drawChainTip(ctx, b, sc, pan, ch) {
+function drawChainTip(_ctx, _b, _sc, _pan, _ch) {
   if(!S.selectedChain || S.selectedChain.size === 0) return;
+  // fix: remove chain calls from render path
+  // 引数なしで呼ばれた場合 (クリックハンドラ経由) は自前で context をセットアップ
+  let ctx = _ctx, b = _b, sc = _sc, pan = _pan, ch = _ch;
+  if(!ctx) {
+    const cv = document.getElementById('mainCanvas');
+    const wrap = document.getElementById('canvasWrap');
+    if(!cv || !wrap || !S.bounds) return;
+    ctx = cv.getContext('2d');
+    const dpr = Math.max(1, Math.min(window.devicePixelRatio||1, 2));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    b = S.bounds; sc = S.scale; pan = S.pan; ch = wrap.clientHeight;
+  }
   // チェーン全端点を収集
   const pts = new Map();
   for(const e of S.selectedChain) {
@@ -902,25 +939,35 @@ function updateMinimap() {
   cv.width = MINIMAP.w;
   cv.height = MINIMAP.h;
   const ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, MINIMAP.w, MINIMAP.h);
 
-  // 背景
+  // fix: clear minimap canvas before redraw
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  // 背景（クリア後に塗る）
   ctx.fillStyle = 'rgba(3,6,14,0.92)';
   ctx.fillRect(0, 0, MINIMAP.w, MINIMAP.h);
   ctx.strokeStyle = 'rgba(0,180,255,0.3)';
   ctx.lineWidth = 1;
   ctx.strokeRect(0.5, 0.5, MINIMAP.w-1, MINIMAP.h-1);
 
+  // fix: minimap scale based on bounds
   const b = S.bounds;
-  const dw = b.maxX - b.minX || 1;
-  const dh = b.maxY - b.minY || 1;
-  const sc = Math.min((MINIMAP.w - MINIMAP.pad*2) / dw,
-                      (MINIMAP.h - MINIMAP.pad*2) / dh);
-  const ox = MINIMAP.pad + ((MINIMAP.w - MINIMAP.pad*2) - dw*sc) / 2;
-  const oy = MINIMAP.pad + ((MINIMAP.h - MINIMAP.pad*2) - dh*sc) / 2;
+  const dw = (b.maxX - b.minX) || 1;
+  const dh = (b.maxY - b.minY) || 1;
+  const scaleX = MINIMAP.w / dw;
+  const scaleY = MINIMAP.h / dh;
+  const scale  = Math.min(scaleX, scaleY) * 0.9; // 余白9%
+  const offsetX = (MINIMAP.w - dw * scale) / 2;
+  const offsetY = (MINIMAP.h - dh * scale) / 2;
 
+  // world → minimap 変換
+  // ※ メインキャンバスは Y 軸反転 (DXF=上向き / canvas=下向き) で描画しているため、
+  //    ミニマップも見た目を一致させるよう Y を反転する。
   function mW(wx, wy) {
-    return [ox + (wx - b.minX)*sc, oy + (b.maxY - wy)*sc];
+    return [
+      (wx - b.minX) * scale + offsetX,
+      (b.maxY - wy) * scale + offsetY
+    ];
   }
 
   // エンティティを間引いて描画（最大3000件）
@@ -937,28 +984,28 @@ function updateMinimap() {
       ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
     } else if(e.type === 'CIRCLE') {
       const [cx,cy] = mW(e.cx, e.cy);
-      const r = Math.max(e.r * sc, 0.5);
+      const r = Math.max(e.r * scale, 0.5);
       ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.stroke();
     }
   }
 
-  // 現在の表示範囲を矩形で表示
+  // fix: viewport rect from world coords
+  // 現在のカメラ状態 (S.pan, S.scale) から、メインキャンバス表示中の world 範囲を逆算。
+  // メインキャンバスは: screen = (world-minX)*scale + pan / Y は (maxY-world)*scale + pan
+  // → 逆変換で world の左端/右端/上端/下端を求めてミニマップに矩形描画。
   const wrap = document.getElementById('canvasWrap');
   const cw = wrap.clientWidth, ch = wrap.clientHeight;
-  // 画面の四隅をDXF座標に逆変換
-  const toWorld = (px, py) => [
-    b.minX + (px - S.pan.x) / S.scale,
-    b.maxY - (py - S.pan.y) / S.scale  // ※ viewer の Y 反転に合わせる
-  ];
-  const [wx0, wy0] = toWorld(0, 0);
-  const [wx1, wy1] = toWorld(cw, ch);
-  const [mx0, my0] = mW(wx0, wy0);
-  const [mx1, my1] = mW(wx1, wy1);
+  const viewLeft   = b.minX + (0  - S.pan.x) / S.scale;
+  const viewRight  = viewLeft + cw / S.scale;
+  const viewTop    = b.maxY - (0  - S.pan.y) / S.scale;   // 画面上端の world Y
+  const viewBottom = viewTop  - ch / S.scale;             // 画面下端の world Y
+  const [mx0, my0] = mW(viewLeft,  viewTop);
+  const [mx1, my1] = mW(viewRight, viewBottom);
   ctx.strokeStyle = '#00ffd0';
   ctx.lineWidth = 1.5;
   ctx.strokeRect(
-    Math.min(mx0,mx1), Math.min(my0,my1),
-    Math.abs(mx1-mx0), Math.abs(my1-my0)
+    Math.min(mx0, mx1), Math.min(my0, my1),
+    Math.abs(mx1 - mx0), Math.abs(my1 - my0)
   );
 }
 
@@ -1083,8 +1130,8 @@ function redrawDXF(){
       });
     }
   }
-  // 選択チェーンの末端に赤丸マーカーを描画
-  drawChainTip(ctx, b, sc, pan, ch);
+  // fix: remove chain calls from render path
+  // drawChainTip は描画ループから外し、クリックハンドラ側で明示的に呼ぶ
   // ミニマップ更新
   updateMinimap();
 }
@@ -1188,6 +1235,8 @@ function hitTest(mx,my){
   let best=null,bestDist=Infinity;
   for(const e of entities){
     if(S.layers[e.layer]&&!S.layers[e.layer].visible)continue;
+    // fix: exclude INSERT from hit detection
+    if(e.type==='INSERT')continue;
     const off=S.mode==='single'?getLayerOffset(e.layer,b,S.explode):{dx:0,dy:0};
     const adjPan={x:pan.x+off.dx*sc,y:pan.y-off.dy*sc};
     const dist=distToEnt(e,mx,my,b,sc,adjPan,ch);
@@ -1501,6 +1550,9 @@ async function handleFile(n,file){
       updateZoneUI(n,name,`${img.width}×${img.height}px`,'img');
     }
     S[`f${n}`]=obj;
+    // fix: reset chain state on load and deselect
+    S.selectedChain = new Set();
+    S.selectedEnt = null;
     if(n===1&&S.mode==='diff'){
       document.getElementById('zone2').classList.remove('disabled');
       document.getElementById('file2').disabled=false;
@@ -1611,6 +1663,8 @@ function renderPartGroups() {
       S.selectedEnt = e;
       S.selectedChain = new Set(grp.lines);
       redrawDXF();
+      // fix: remove chain calls from render path - クリックハンドラから明示呼出
+      drawChainTip();
       showToast(`${key} : ${grp.texts.length}箇所にジャンプ`, 'info');
     });
     el.addEventListener('mouseenter', () => el.style.background='rgba(0,180,255,.08)');
@@ -1695,6 +1749,8 @@ function renderRecent() {
       showInspector(e, null);
       setSideTab('inspect');
       redrawDXF();
+      // fix: remove chain calls from render path - クリックハンドラから明示呼出
+      drawChainTip();
     });
     el.addEventListener('mouseenter', () => el.style.background='rgba(0,180,255,.08)');
     el.addEventListener('mouseleave', () => el.style.background='');
@@ -2126,7 +2182,8 @@ function selectEnt(listIdx){
   S.selectedChain=buildChain(item.e);
   showInspector(item.e,item.t);
   filterEntList();
-  if(S.f1&&S.f1.type==='dxf')redrawDXF();
+  if(S.f1&&S.f1.type==='dxf'){ redrawDXF(); drawChainTip(); }
+  // fix: remove chain calls from render path - クリックハンドラから明示呼出
 }
 
 
@@ -2468,7 +2525,10 @@ window.addEventListener('mouseup',e=>{
       if(!hit){ clearSelection(); }
       if(hit){
         S.selectedEnt=hit;
-        S.selectedChain=buildChain(hit);
+        // fix: skip chain/tip for non-leader lines
+        // buildChain 内でも isLeaderLine ガード + size<=1 → 空Set 返却するため、
+        // ここでも先にショートサーキットして無駄な走査を避ける
+        S.selectedChain = isLeaderLine(hit) ? buildChain(hit) : new Set();
         // Find in list
         const all=S.mode==='single'?S.allItems:S.allItems.filter(i=>{const ef=S.efState||{add:true,del:true,same:true};return i.t==='add'?ef.add:i.t==='del'?ef.del:ef.same;});
         const idx=all.findIndex(i=>i.e===hit);
@@ -2477,6 +2537,8 @@ window.addEventListener('mouseup',e=>{
         calcSelectionStats();
         filterEntList();
         redrawDXF();
+        // fix: remove chain calls from render path - クリックハンドラから明示呼出
+        drawChainTip();
         setSideTab('inspect');
         // LINE以外のみツールチップを1秒表示
         if(hit.type!=='LINE'){
