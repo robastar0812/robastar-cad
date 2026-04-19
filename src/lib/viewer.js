@@ -21,6 +21,8 @@ const S={
   selectedChain: new Set(),
   searchResults: [],  // テキスト検索ヒット一覧
   searchIdx: -1,      // 現在フォーカス中のインデックス
+  recentEnts: [],     // 最近見たエンティティ履歴（最大5件）
+  diffIdx: -1,        // 差分ジャンプ現在インデックス
   f1:null,f2:null,
   diff:null,
   pixelDiff:null,
@@ -1361,6 +1363,89 @@ function updateZoneUI(n,name,meta,typeKey){
   if(cb) cb.style.display='';
 }
 
+// ── 差分ジャンプ ──
+function jumpDiff(dir) {
+  if(!S.diff) return;
+  const targets = [...S.diff.added, ...S.diff.removed];
+  if(!targets.length) return;
+  S.diffIdx = (S.diffIdx + dir + targets.length) % targets.length;
+  const e = targets[S.diffIdx];
+  const wrap = document.getElementById('canvasWrap');
+  const cw = wrap.clientWidth, ch = wrap.clientHeight;
+  const b = S.bounds; if(!b) return;
+  const ex = e.x ?? e.x1 ?? e.cx ?? 0;
+  const ey = e.y ?? e.y1 ?? e.cy ?? 0;
+  S.pan.x = cw/2 - (ex - b.minX) * S.scale;
+  S.pan.y = ch/2 - (b.maxY - ey) * S.scale;
+  S.selectedEnt = e;
+  S.selectedChain = new Set();
+  // ジャンプ先カウント表示更新
+  const el = document.getElementById('diffJumpCount');
+  if(el) el.textContent = `${S.diffIdx + 1} / ${targets.length}`;
+  showInspector(e, S.diff.added.includes(e) ? 'add' : 'del');
+  setSideTab('inspect');
+  redrawDXF();
+}
+
+// ── 最近見た部品履歴 ──
+function addRecent(e) {
+  if(!e) return;
+  S.recentEnts = S.recentEnts.filter(r => r !== e);
+  S.recentEnts.unshift(e);
+  if(S.recentEnts.length > 5) S.recentEnts.pop();
+  renderRecent();
+}
+
+function renderRecent() {
+  const box = document.getElementById('recentBox');
+  if(!box) return;
+  if(!S.recentEnts.length) { box.style.display='none'; return; }
+  box.style.display = 'block';
+  const items = S.recentEnts.map((e, i) => {
+    const sem = e._sem || 'other';
+    const semInfo = SEM[sem] || SEM.other;
+    const label = e.type==='TEXT'||e.type==='MTEXT'
+      ? esc(e.text.slice(0,20))
+      : e.type==='CIRCLE' ? `⌀${(e.r*2).toFixed(2)}`
+      : e.type==='LINE' ? `L=${Math.hypot(e.x2-e.x1,e.y2-e.y1).toFixed(1)}`
+      : e.type;
+    return `<div class="recent-item" data-idx="${i}"
+      style="padding:4px 6px;cursor:pointer;border-bottom:1px solid rgba(0,180,255,.06);
+      display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;">
+      <span style="width:7px;height:7px;border-radius:50%;background:${semInfo.color};
+        flex-shrink:0;box-shadow:0 0 4px ${semInfo.color}66;display:inline-block;"></span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+        color:var(--text)">${label}</span>
+      <span style="color:var(--dim);font-size:9px">${esc(e.layer)}</span>
+    </div>`;
+  }).join('');
+  box.innerHTML = `
+    <div style="font-size:9px;color:var(--dim);font-family:var(--mono);
+      padding:4px 6px;border-bottom:1px solid var(--border2);">最近見た部品</div>
+    ${items}
+  `;
+  box.querySelectorAll('.recent-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const e = S.recentEnts[parseInt(el.dataset.idx)];
+      if(!e) return;
+      const wrap = document.getElementById('canvasWrap');
+      const cw = wrap.clientWidth, ch = wrap.clientHeight;
+      const b = S.bounds; if(!b) return;
+      const ex = e.x ?? e.x1 ?? e.cx ?? 0;
+      const ey = e.y ?? e.y1 ?? e.cy ?? 0;
+      S.pan.x = cw/2 - (ex - b.minX) * S.scale;
+      S.pan.y = ch/2 - (b.maxY - ey) * S.scale;
+      S.selectedEnt = e;
+      S.selectedChain = buildChain(e);
+      showInspector(e, null);
+      setSideTab('inspect');
+      redrawDXF();
+    });
+    el.addEventListener('mouseenter', () => el.style.background='rgba(0,180,255,.08)');
+    el.addEventListener('mouseleave', () => el.style.background='');
+  });
+}
+
 function clearSelection(){
   S.selectedEnt = null;
   S.selectedChain = new Set();
@@ -1936,6 +2021,8 @@ function setMode(mode){
     document.getElementById('tabLayers').style.display='';
     // Show ent filter in list
     document.getElementById('entFilter').style.display='none';
+    const djb2 = document.getElementById('diffJumpBar');
+    if(djb2) djb2.style.display='none';
   }else{
     dropRow.className='drop-row mode-diff';
     zone2.style.display='';dzDiv.style.display='';
@@ -1943,6 +2030,8 @@ function setMode(mode){
     document.getElementById('stInfo2').style.display='';
     document.getElementById('tabLayers').style.display='';
     document.getElementById('entFilter').style.display='flex';
+    const djb = document.getElementById('diffJumpBar');
+    if(djb) djb.style.display='block';
     if(S.f1){
       document.getElementById('zone2').classList.remove('disabled');
       document.getElementById('file2').disabled=false;
@@ -1986,6 +2075,7 @@ window.addEventListener('mouseup',e=>{
         const all=S.mode==='single'?S.allItems:S.allItems.filter(i=>{const ef=S.efState||{add:true,del:true,same:true};return i.t==='add'?ef.add:i.t==='del'?ef.del:ef.same;});
         const idx=all.findIndex(i=>i.e===hit);
         showInspector(hit,idx>=0?all[idx].t:null);
+        addRecent(hit);
         filterEntList();
         redrawDXF();
         setSideTab('inspect');
@@ -2788,6 +2878,35 @@ async function parseDWG(buffer) {
     });
   }
 
+  // 差分ジャンプUIを st-list の末尾に注入（差分モード時のみ表示）
+  const diffJumpUI = document.createElement('div');
+  diffJumpUI.id = 'diffJumpBar';
+  diffJumpUI.style.cssText = 'display:none;padding:6px 8px;border-top:1px solid var(--border2);flex-shrink:0;';
+  diffJumpUI.innerHTML = `
+    <div style="font-size:9px;color:var(--dim);font-family:var(--mono);margin-bottom:4px;letter-spacing:.08em;">差分ジャンプ（追加・削除）</div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <button id="diffJumpPrev" style="padding:2px 10px;background:rgba(0,180,255,.1);
+        border:1px solid rgba(0,180,255,.3);color:var(--accent);border-radius:4px;
+        cursor:pointer;font-family:var(--mono);font-size:11px;">◀ 前</button>
+      <span id="diffJumpCount" style="flex:1;text-align:center;font-family:var(--mono);
+        font-size:10px;color:var(--dim);">— / —</span>
+      <button id="diffJumpNext" style="padding:2px 10px;background:rgba(0,180,255,.1);
+        border:1px solid rgba(0,180,255,.3);color:var(--accent);border-radius:4px;
+        cursor:pointer;font-family:var(--mono);font-size:11px;">次 ▶</button>
+    </div>
+  `;
+  const stListEl = document.getElementById('st-list');
+  if(stListEl) stListEl.appendChild(diffJumpUI);
+  document.getElementById('diffJumpPrev')?.addEventListener('click', () => jumpDiff(-1));
+  document.getElementById('diffJumpNext')?.addEventListener('click', () => jumpDiff(1));
+
+  const stInspect = document.getElementById('st-inspect');
+  if(stInspect) {
+    const recentBox = document.createElement('div');
+    recentBox.id = 'recentBox';
+    recentBox.style.cssText = 'display:none;border-top:1px solid var(--border2);margin-top:8px;';
+    stInspect.appendChild(recentBox);
+  }
   setupZone(1);setupZone(2);
   setupBodyDrop();
   // スマホ(600px以下)のみ警告表示
