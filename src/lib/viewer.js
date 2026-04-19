@@ -737,6 +737,9 @@ function drawEnt(ctx,e,color,b,sc,pan,ch,highlight=false){
     case'LWPOLYLINE':{if(e.pts.length<2)break;ctx.beginPath();const[sx,sy]=W(e.pts[0].x,e.pts[0].y,b,sc,pan,ch);ctx.moveTo(sx,sy);e.pts.slice(1).forEach(p=>{const[px,py]=W(p.x,p.y,b,sc,pan,ch);ctx.lineTo(px,py);});if(e.closed)ctx.closePath();ctx.stroke();break;}
     case'TEXT':case'MTEXT':{
       if(!e.text) break;
+      // LOD: 画面上のフォントサイズが4px未満なら描画スキップ
+      const fsCheck = Math.max(e.h * sc, 0);
+      if(fsCheck < 4 && !highlight) break;
       const txt = e.text.slice(0,200);
       const fs  = Math.max(e.h*sc, 4);
       ctx.shadowBlur=0;
@@ -842,6 +845,79 @@ function drawChainTip(ctx, b, sc, pan, ch) {
     ctx.fill();
   }
   ctx.restore();
+}
+
+// ── ミニマップ ──
+const MINIMAP = { w: 160, h: 120, pad: 8 };
+
+function updateMinimap() {
+  const cv = document.getElementById('minimapCanvas');
+  if(!cv || !S.bounds || !S.f1 || S.f1.type !== 'dxf') {
+    if(cv) cv.style.display = 'none';
+    return;
+  }
+  cv.style.display = 'block';
+  cv.width = MINIMAP.w;
+  cv.height = MINIMAP.h;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, MINIMAP.w, MINIMAP.h);
+
+  // 背景
+  ctx.fillStyle = 'rgba(3,6,14,0.92)';
+  ctx.fillRect(0, 0, MINIMAP.w, MINIMAP.h);
+  ctx.strokeStyle = 'rgba(0,180,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, MINIMAP.w-1, MINIMAP.h-1);
+
+  const b = S.bounds;
+  const dw = b.maxX - b.minX || 1;
+  const dh = b.maxY - b.minY || 1;
+  const sc = Math.min((MINIMAP.w - MINIMAP.pad*2) / dw,
+                      (MINIMAP.h - MINIMAP.pad*2) / dh);
+  const ox = MINIMAP.pad + ((MINIMAP.w - MINIMAP.pad*2) - dw*sc) / 2;
+  const oy = MINIMAP.pad + ((MINIMAP.h - MINIMAP.pad*2) - dh*sc) / 2;
+
+  function mW(wx, wy) {
+    return [ox + (wx - b.minX)*sc, oy + (b.maxY - wy)*sc];
+  }
+
+  // エンティティを間引いて描画（最大3000件）
+  const ents = S.f1.parsed.entities;
+  const step = Math.max(1, Math.floor(ents.length / 3000));
+  ctx.strokeStyle = 'rgba(0,180,255,0.35)';
+  ctx.lineWidth = 0.5;
+  for(let i = 0; i < ents.length; i += step) {
+    const e = ents[i];
+    if(!S.layers[e.layer] || !S.layers[e.layer].visible) continue;
+    if(e.type === 'LINE') {
+      const [x1,y1] = mW(e.x1, e.y1);
+      const [x2,y2] = mW(e.x2, e.y2);
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    } else if(e.type === 'CIRCLE') {
+      const [cx,cy] = mW(e.cx, e.cy);
+      const r = Math.max(e.r * sc, 0.5);
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.stroke();
+    }
+  }
+
+  // 現在の表示範囲を矩形で表示
+  const wrap = document.getElementById('canvasWrap');
+  const cw = wrap.clientWidth, ch = wrap.clientHeight;
+  // 画面の四隅をDXF座標に逆変換
+  const toWorld = (px, py) => [
+    b.minX + (px - S.pan.x) / S.scale,
+    b.maxY - (py - S.pan.y) / S.scale  // ※ viewer の Y 反転に合わせる
+  ];
+  const [wx0, wy0] = toWorld(0, 0);
+  const [wx1, wy1] = toWorld(cw, ch);
+  const [mx0, my0] = mW(wx0, wy0);
+  const [mx1, my1] = mW(wx1, wy1);
+  ctx.strokeStyle = '#00ffd0';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(
+    Math.min(mx0,mx1), Math.min(my0,my1),
+    Math.abs(mx1-mx0), Math.abs(my1-my0)
+  );
 }
 
 let _rafPending = false;
@@ -967,6 +1043,8 @@ function redrawDXF(){
   }
   // 選択チェーンの末端に赤丸マーカーを描画
   drawChainTip(ctx, b, sc, pan, ch);
+  // ミニマップ更新
+  updateMinimap();
 }
 
 // ═══ PDF RENDER ═══
@@ -1172,13 +1250,60 @@ async function buildStructHTML(f){
 }
 
 // ═══ LAYER PANEL BUILD ═══
+// ── レイヤー一括操作 ──
+function setAllLayersVisible(visible) {
+  Object.keys(S.layers).forEach(name => {
+    if(S.layers[name]) S.layers[name].visible = visible;
+  });
+  buildLayerPanel();
+  redrawDXF();
+}
+
+function setLeaderLayersOnly() {
+  if(!S.f1 || S.f1.type !== 'dxf') return;
+  const ents = S.f1.parsed.entities;
+  // 引き込み線レイヤー = LINE が多く、かつ outline/other 分類が主体のレイヤー
+  const leaderLayers = new Set();
+  const layerSem = {};
+  ents.forEach(e => {
+    if(!layerSem[e.layer]) layerSem[e.layer] = {};
+    const sem = e._sem || 'other';
+    layerSem[e.layer][sem] = (layerSem[e.layer][sem] || 0) + 1;
+  });
+  Object.entries(layerSem).forEach(([layer, semCounts]) => {
+    const total = Object.values(semCounts).reduce((a,b)=>a+b,0);
+    const outlineOther = (semCounts.outline||0) + (semCounts.other||0);
+    // 外形線・その他が70%以上 → 引き込み線レイヤーと判定
+    if(outlineOther / total > 0.7) leaderLayers.add(layer);
+  });
+  Object.keys(S.layers).forEach(name => {
+    if(S.layers[name]) S.layers[name].visible = leaderLayers.has(name);
+  });
+  buildLayerPanel();
+  redrawDXF();
+}
+
 function buildLayerPanel(){
   if(!S.f1||S.f1.type!=='dxf')return;
   const{layers,layerCounts}=S.f1.parsed;
   // Ensure all layers in S.layers
   layers.forEach(l=>getLayerColor(l));
   // Explode control
-  let h=`<div class="explode-ctrl">
+  let h=`<div style="display:flex;gap:4px;padding:6px 8px;border-bottom:1px solid var(--border2);flex-shrink:0;">
+    <button onclick="setAllLayersVisible(true)"
+      style="flex:1;font-size:9px;padding:3px 0;background:rgba(0,255,208,.1);
+      border:1px solid rgba(0,255,208,.3);color:#00ffd0;border-radius:3px;cursor:pointer;
+      font-family:var(--mono);">全表示</button>
+    <button onclick="setAllLayersVisible(false)"
+      style="flex:1;font-size:9px;padding:3px 0;background:rgba(255,61,90,.1);
+      border:1px solid rgba(255,61,90,.3);color:#ff3d5a;border-radius:3px;cursor:pointer;
+      font-family:var(--mono);">全非表示</button>
+    <button onclick="setLeaderLayersOnly()"
+      style="flex:1;font-size:9px;padding:3px 0;background:rgba(0,180,255,.1);
+      border:1px solid rgba(0,180,255,.3);color:var(--accent);border-radius:3px;cursor:pointer;
+      font-family:var(--mono);">引込線のみ</button>
+  </div>
+  <div class="explode-ctrl">
     <div class="explode-label">レイヤー分離 <span id="explodeVal">0%</span></div>
     <input type="range" class="explode-range" id="explodeRange" min="0" max="100" value="0" oninput="setExplode(this.value)">
   </div>
@@ -2900,6 +3025,44 @@ async function parseDWG(buffer) {
   document.getElementById('diffJumpPrev')?.addEventListener('click', () => jumpDiff(-1));
   document.getElementById('diffJumpNext')?.addEventListener('click', () => jumpDiff(1));
 
+  // ミニマップ canvas を canvasWrap 右下に注入
+  const mmWrap = document.getElementById('canvasWrap');
+  if(mmWrap) {
+    const mmCv = document.createElement('canvas');
+    mmCv.id = 'minimapCanvas';
+    mmCv.style.cssText = `
+      position:absolute;
+      bottom:10px;
+      right:10px;
+      border-radius:4px;
+      cursor:pointer;
+      display:none;
+      z-index:20;
+      box-shadow:0 2px 12px rgba(0,0,0,0.6);
+    `;
+    mmWrap.appendChild(mmCv);
+    // クリックでその位置にジャンプ
+    mmCv.addEventListener('click', ev => {
+      if(!S.bounds) return;
+      const rect = mmCv.getBoundingClientRect();
+      const px = ev.clientX - rect.left;
+      const py = ev.clientY - rect.top;
+      const b = S.bounds;
+      const dw = b.maxX - b.minX || 1;
+      const dh = b.maxY - b.minY || 1;
+      const sc = Math.min((MINIMAP.w - MINIMAP.pad*2) / dw,
+                          (MINIMAP.h - MINIMAP.pad*2) / dh);
+      const ox = MINIMAP.pad + ((MINIMAP.w - MINIMAP.pad*2) - dw*sc) / 2;
+      const oy = MINIMAP.pad + ((MINIMAP.h - MINIMAP.pad*2) - dh*sc) / 2;
+      const wx = b.minX + (px - ox) / sc;
+      const wy = b.maxY - (py - oy) / sc;
+      const wrap2 = document.getElementById('canvasWrap');
+      S.pan.x = wrap2.clientWidth/2  - (wx - b.minX) * S.scale;
+      S.pan.y = wrap2.clientHeight/2 - (b.maxY - wy) * S.scale;
+      redrawDXF();
+    });
+  }
+
   const stInspect = document.getElementById('st-inspect');
   if(stInspect) {
     const recentBox = document.createElement('div');
@@ -4239,6 +4402,7 @@ window.LAYER_COLORS = LAYER_COLORS
 window.LANG = typeof LANG !== 'undefined' ? LANG : null
 
 const __viewerExports = {
+  updateMinimap,
   getLayerColor, aciToHex, filterXMarks, parseDXF, readEntPairs, parseOneEntity,
   expandInsert, applyAci, buildEnt, eKey, diffDXF, entBounds, computeBounds,
   layerCenter, W, matchRadius, classifyEntity, analyzeSemantics, semColor,
@@ -4259,7 +4423,8 @@ const __viewerExports = {
   updateCompass, load3DFile, parseSTEPMesh, parseIGES, parseSTEPInfo,
   render3DPlaceholder, toggleClipPanel, updateClipPlanes, updateClipCaps,
   addCap, resetClipAxis, resetAllClip, parsePLY, parseOFF, parseIGESInfo,
-  showHelp, hideHelp, switchHelpTab
+  showHelp, hideHelp, switchHelpTab,
+  setAllLayersVisible, setLeaderLayersOnly
 }
 for (const [name, fn] of Object.entries(__viewerExports)) {
   if (typeof fn === 'function') window[name] = fn
