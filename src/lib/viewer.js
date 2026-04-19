@@ -99,7 +99,7 @@ function renderSearchResults() {
     box.style.display = 'none';
     return;
   }
-  box.style.display = 'block';
+  box.style.display = 'flex';
   const countEl = document.getElementById('searchCount');
   if(countEl) countEl.textContent = `${S.searchIdx + 1} / ${results.length} 件`;
   const prevBtn = document.getElementById('searchPrev');
@@ -1488,6 +1488,89 @@ function updateZoneUI(n,name,meta,typeKey){
   if(cb) cb.style.display='';
 }
 
+// ── 部品番号グループ化 ──
+function buildPartGroups() {
+  if(!S.f1 || S.f1.type !== 'dxf') return {};
+  const allEnts = S.f1.parsed.entities;
+  const textEnts = allEnts.filter(e =>
+    (e.type==='TEXT'||e.type==='MTEXT') && e.text && e.text.trim()
+  );
+  // バルーン番号パターン: A9XXC / 数字のみ / アルファベット+数字
+  const balloonPat = /^([A-Z]+\d+[A-Z]*|\d+)$/;
+  const groups = {};
+  textEnts.forEach(e => {
+    const key = e.text.trim();
+    if(!balloonPat.test(key)) return;
+    if(!groups[key]) groups[key] = { texts:[], lines:[] };
+    groups[key].texts.push(e);
+  });
+  // 各グループのテキスト周辺のLINEを収集
+  const lineEnts = allEnts.filter(e => e.type==='LINE');
+  Object.entries(groups).forEach(([key, grp]) => {
+    const seen = new Set();
+    grp.texts.forEach(t => {
+      lineEnts.forEach(l => {
+        const d = Math.min(
+          Math.hypot(l.x1-t.x, l.y1-t.y),
+          Math.hypot(l.x2-t.x, l.y2-t.y)
+        );
+        if(d < 200 && !seen.has(l)) { seen.add(l); grp.lines.push(l); }
+      });
+    });
+  });
+  // 2件以上テキストがあるグループのみ返す
+  return Object.fromEntries(
+    Object.entries(groups).filter(([,g]) => g.texts.length >= 2)
+  );
+}
+
+function renderPartGroups() {
+  const box = document.getElementById('partGroupBox');
+  if(!box) return;
+  const groups = buildPartGroups();
+  const keys = Object.keys(groups).sort();
+  if(!keys.length) {
+    box.innerHTML = '<div class="no-data">バルーン番号グループなし</div>';
+    return;
+  }
+  let h = `<div style="font-size:9px;color:var(--dim);font-family:var(--mono);
+    padding:4px 8px;border-bottom:1px solid var(--border2);">
+    同一番号グループ（${keys.length}種）</div>`;
+  keys.forEach(key => {
+    const grp = groups[key];
+    h += `<div class="part-grp-item" data-key="${esc(key)}"
+      style="padding:5px 8px;cursor:pointer;border-bottom:1px solid rgba(0,180,255,.06);
+      display:flex;align-items:center;gap:8px;font-family:var(--mono);">
+      <span style="font-size:11px;color:var(--accent);font-weight:bold;
+        min-width:60px;">${esc(key)}</span>
+      <span style="font-size:9px;color:var(--dim);">×${grp.texts.length} 箇所</span>
+      <span style="font-size:9px;color:var(--dim);margin-left:auto;">▶</span>
+    </div>`;
+  });
+  box.innerHTML = h;
+  box.querySelectorAll('.part-grp-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const key = el.dataset.key;
+      const grp = groups[key];
+      if(!grp || !grp.texts.length) return;
+      // 最初のテキストにジャンプ
+      const e = grp.texts[0];
+      const wrap = document.getElementById('canvasWrap');
+      const cw = wrap.clientWidth, ch = wrap.clientHeight;
+      const b = S.bounds; if(!b) return;
+      S.pan.x = cw/2 - (e.x - b.minX) * S.scale;
+      S.pan.y = ch/2 - (b.maxY - e.y) * S.scale;
+      // 全テキストをハイライト
+      S.selectedEnt = e;
+      S.selectedChain = new Set(grp.lines);
+      redrawDXF();
+      showToast(`${key} : ${grp.texts.length}箇所にジャンプ`, 'info');
+    });
+    el.addEventListener('mouseenter', () => el.style.background='rgba(0,180,255,.08)');
+    el.addEventListener('mouseleave', () => el.style.background='');
+  });
+}
+
 // ── 差分ジャンプ ──
 function jumpDiff(dir) {
   if(!S.diff) return;
@@ -1594,6 +1677,13 @@ function clearFile(n,event){
   }
   S.diff=null;S.pixelDiff=null;S.singleCanvas=null;S.bounds=null;S.selectedEnt=null;S.selectedChain=new Set();
   S.layers={};S.allItems=[];
+  // 検索・履歴・差分ジャンプ状態を初期化
+  S.searchResults=[]; S.searchIdx=-1;
+  S.recentEnts=[]; S.diffIdx=-1;
+  const _si=document.getElementById('searchInput'); if(_si) _si.value='';
+  const _srb=document.getElementById('searchResultBox'); if(_srb) _srb.style.display='none';
+  const _pg=document.getElementById('partGroupBox'); if(_pg) _pg.innerHTML='';
+  const _rb=document.getElementById('recentBox'); if(_rb){ _rb.style.display='none'; _rb.innerHTML=''; }
   // キャンバスをクリアしてビジュアルタブに戻す
   resetCanvas();resetStats();
   renderEntList([]);
@@ -1683,7 +1773,7 @@ async function runSingle(){
     renderEntList(items);
     buildLayerPanel();
     // キャンバスサイズ確定後にフィット（2 回の rAF でレイアウト確定を待つ ≒ 32ms）
-    requestAnimationFrame(()=>requestAnimationFrame(()=>{ fitView(); redrawDXF(); }));
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{ fitView(); redrawDXF(); renderPartGroups(); }));
   }else if(f.type==='pdf'){
     showLoading(true,'ページ描画中...');
     S.singleCanvas=await renderPDFPage(f.pdfDoc,S.page+1,1.5);
@@ -2971,7 +3061,7 @@ async function parseDWG(buffer) {
           color:#ff3d5a;border-radius:4px;cursor:pointer;">✕</button>
       </div>
       <div id="searchResultBox" style="display:none;margin-top:4px;
-        display:flex;align-items:center;gap:4px;font-family:var(--mono);font-size:10px;color:var(--dim);">
+        align-items:center;gap:4px;font-family:var(--mono);font-size:10px;color:var(--dim);">
         <button id="searchPrev" style="padding:1px 6px;background:rgba(0,180,255,.1);
           border:1px solid rgba(0,180,255,.3);color:var(--accent);border-radius:3px;cursor:pointer;">◀</button>
         <span id="searchCount">0 / 0 件</span>
@@ -2987,6 +3077,8 @@ async function parseDWG(buffer) {
     document.getElementById('searchInput').addEventListener('keydown', e => {
       if(e.key==='Enter') jumpToSearchResult(S.searchIdx + 1);
       if(e.key==='Escape') {
+        // 検索クリアのみ。グローバル Escape の clearSelection とは分離
+        e.stopPropagation();
         e.target.value='';
         searchDXF('');
       }
@@ -3041,8 +3133,11 @@ async function parseDWG(buffer) {
       box-shadow:0 2px 12px rgba(0,0,0,0.6);
     `;
     mmWrap.appendChild(mmCv);
-    // クリックでその位置にジャンプ
+    // クリックでその位置にジャンプ（canvasWrap 親へのバブリング停止）
+    mmCv.addEventListener('mousedown', ev => ev.stopPropagation());
+    mmCv.addEventListener('mouseup', ev => ev.stopPropagation());
     mmCv.addEventListener('click', ev => {
+      ev.stopPropagation();
       if(!S.bounds) return;
       const rect = mmCv.getBoundingClientRect();
       const px = ev.clientX - rect.left;
@@ -3061,6 +3156,21 @@ async function parseDWG(buffer) {
       S.pan.y = wrap2.clientHeight/2 - (b.maxY - wy) * S.scale;
       redrawDXF();
     });
+  }
+
+  // 部品番号グループボックスを st-list 内の検索ボックス直下に注入
+  const stListEl2 = document.getElementById('st-list');
+  if(stListEl2) {
+    const pgBox = document.createElement('div');
+    pgBox.id = 'partGroupBox';
+    pgBox.style.cssText = 'border-bottom:1px solid var(--border2);max-height:200px;overflow-y:auto;';
+    // 検索UIの直後に挿入
+    const searchUI2 = stListEl2.querySelector('div');
+    if(searchUI2 && searchUI2.nextSibling) {
+      stListEl2.insertBefore(pgBox, searchUI2.nextSibling);
+    } else {
+      stListEl2.appendChild(pgBox);
+    }
   }
 
   const stInspect = document.getElementById('st-inspect');
@@ -3084,8 +3194,11 @@ async function parseDWG(buffer) {
     if(navigator.clipboard&&txt){
       navigator.clipboard.writeText(txt).then(()=>{
         item.style.background='rgba(0,255,208,.15)';
+        // 連打時の重複防止: 既存バッジを先に除去
+        item.querySelectorAll('.assoc-copy-badge').forEach(b=>b.remove());
         // ✓ コピー済みバッジを表示
         const badge=document.createElement('span');
+        badge.className='assoc-copy-badge';
         badge.textContent='✓ コピー済み';
         badge.style.cssText='position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:9px;color:#00ffd0;font-family:var(--mono);pointer-events:none;';
         item.style.position='relative';
@@ -4402,7 +4515,7 @@ window.LAYER_COLORS = LAYER_COLORS
 window.LANG = typeof LANG !== 'undefined' ? LANG : null
 
 const __viewerExports = {
-  updateMinimap,
+  updateMinimap, buildPartGroups, renderPartGroups,
   getLayerColor, aciToHex, filterXMarks, parseDXF, readEntPairs, parseOneEntity,
   expandInsert, applyAci, buildEnt, eKey, diffDXF, entBounds, computeBounds,
   layerCenter, W, matchRadius, classifyEntity, analyzeSemantics, semColor,
